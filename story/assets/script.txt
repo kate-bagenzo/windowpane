@@ -1,0 +1,14 @@
+1 SETSTYLE simple-border
+
+2 SETSTYLE simple-sidebar
+2 MUSIC reconciliation.ogg
+
+3 SETSTYLE simple-bg
+
+3.05 SETSTYLE simple-centered
+3.05 MUSIC CLEAR
+
+5 SETSTYLE simple-border
+5 SFX lighter.wav
+
+7 SETSTYLE simple-centered

@@ -1,0 +1,353 @@
+// INIT
+@use "sass:map";
+@use '/engine/generated/config.scss' as *;
+
+@font-face {
+    font-family: 'inconsolata';
+    src: url('/engine/fonts/inconsolata.ttf');
+}
+
+$wp-bg-color: black;
+$wp-fg-color: white;
+
+* {
+    box-sizing: border-box;
+    &:focus {
+        outline: none;
+    }
+    user-select: none;
+}
+
+.lucide {
+    width: 1em;
+    height: 1em;
+}
+
+.isHidden {
+    display: none !important;
+}
+
+html {
+    font-size: 20px;
+}
+
+// MAIN VIEWS
+html, body {
+    width: 100%;
+    height: 100%;
+	background-color: map.get($config, "bgColor");
+}
+
+
+main {
+    width: 100%;
+    height: 100%;
+    background-color: map.get($config, "bgColor");
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+#screen {
+    width: map.get($config, "viewerWidth");
+    height: map.get($config, "viewerHeight");
+}
+
+#screen {
+    background-color: map.get($config, "bgColor");
+    color: map.get($config, "fgColor");
+    overflow-y: scroll;
+}
+
+#screen[src=""] {
+    display: none;
+}
+
+// UI ELEMENTS
+.windowpane-ui {
+    font-family: 'inconsolata';
+    background-color: $wp-bg-color;
+    color: $wp-fg-color;
+}
+
+.windowpane-bar {
+    @extend .windowpane-ui;
+    position: absolute;
+    bottom: 0px;
+    display: flex;
+    gap: 0.5rem;
+    font-size: 1rem;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 1.2rem;
+    overflow: hidden;
+}
+
+.wp-ui-help {
+    @extend .windowpane-ui;
+    h1 {
+        font-size: 4rem;
+    }
+    h2 {
+        font-size: 1.5rem;
+    }
+
+    h3,
+    p,
+    ul {
+        text-align: right;
+    }
+    p:has(+ ul) {
+        margin-top: 1rem;
+    }
+}
+
+.next-page {
+    font-weight: bold;
+    font-size: 1.5rem;
+    text-decoration: underline;
+    &:hover {
+        opacity: 50%;
+        cursor: pointer;
+    }
+}
+
+.wp-continue:hover {
+    cursor: pointer;
+}
+
+#wp-infobar {
+    @extend .windowpane-bar;
+    padding-left: 1rem;
+    padding-right: 1rem;
+    padding-top: 0.3rem;
+    button {
+        all: unset;
+        text-decoration: underline;
+        &:hover {
+            opacity: 50%;
+            cursor: pointer;
+        }
+    }
+
+    h1,
+    h2 {
+        text-overflow: ellipsis;
+        overflow: hidden;
+    }
+    
+    h1,
+    h2,
+    h3,
+    button {
+        white-space: nowrap;
+        text-align: center;
+        margin-bottom: 0.3rem;
+    }
+}
+
+#wp-bookmark,
+#wp-volume {
+    @extend .windowpane-bar;
+}
+
+$ui_box_width: max(600px, (calc(map.get($config, "viewerWidth") / 1.5)));
+$ui_box_height: max(600px, (calc(map.get($config, "viewerHeight") / 1.5)));
+
+#wp-help {
+    @extend .windowpane-ui;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 1rem;
+    border: 1px solid $wp-fg-color;
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    margin: auto;
+    width: $ui_box_width;
+    height: $ui_box_height;
+    padding: 1.5rem;
+    h2 {
+        font-size: 3rem;
+    }
+    h2,
+    h3,
+    h4 {
+        display: flex;
+        gap: 0.5rem;
+    }
+    ul, li {
+        width: 100%;
+    }
+    li {
+        display: flex;
+        gap: 1rem;
+        justify-content: space-between;
+    }
+}
+
+#wp-skip-page {
+    @extend .windowpane-ui;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 1rem;
+    border: 1px solid $wp-fg-color;
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    margin: auto;
+    width: $ui_box_width;
+    height: $ui_box_height;
+    padding: 1.5rem;
+    h1 {
+        font-size: 3rem;
+        display: flex;
+        gap: 0.5rem;
+    }
+    h2 {
+        font-size: 1.5rem;
+    }
+    input {
+        all: unset;
+        font-size: 5rem;
+        width: 80%;
+        text-align: center;
+        background-color: map.get($config, "bgColor");
+        color: map.get($config, "fgColor");
+    }
+    span {
+        display: flex;
+        gap: 0.5rem;
+    }
+}
+
+#wp-startbutton {
+    @extend .windowpane-ui;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100vw;
+    height: 100vh;
+    transition: opacity 1s;
+
+    button {
+        all: unset;
+        width: 100%;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1rem;
+        cursor: pointer;
+        font-size: 1.5rem;
+    }
+
+    em {
+        font-size: 2rem;
+        font-weight: bold;
+    }
+}
+
+#wp-loading {
+    @extend .windowpane-ui;
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100vw;
+    height: 100vh;
+    transition: opacity 1s;
+    font-size: 3rem;
+}
+
+#viewer:has(#wp-replay-overlay) {
+    display: grid;
+    #screen,
+    #wp-replay-overlay {
+        grid-area: 1 / 1;
+    }
+}
+
+#wp-replay-overlay {
+    @extend .windowpane-ui;
+    display: flex;
+    gap: 2rem;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    width: map.get($config, "viewerWidth");
+    height: map.get($config, "viewerHeight");
+    font-size: 3rem;
+    z-index: 100;
+
+    background-color: #ffffff81;
+    cursor: pointer;
+    p, em {
+        background-color: black;
+        color: white;
+        padding: 1rem;
+    }
+    em {
+        font-size: 8rem;
+        padding-left: 2rem;
+        padding-right: 2rem;
+    }
+}
+
+// SMALLER SCREENS
+@media (max-height: calc(map.get($config, "viewerHeight") + 3rem)) {
+    #wp-infobar {
+        display: none;
+    }
+}
+
+@media (max-width: map.get($config, "viewerWidth")), (max-height: map.get($config, "viewerHeight")) {
+    #viewer {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    #screen {
+        object-fit: contain;
+        aspect-ratio: map.get($config, "viewerWidth") / map.get($config, "viewerHeight");
+    }
+    #wp-replay-overlay {
+        display: none;
+    }
+    main {
+        overflow: hidden;
+    }
+}
+
+@media (max-height: map.get($config, "viewerHeight")) and (min-aspect-ratio: 1) {
+    #screen {
+        height: 100vh;
+        width: auto;
+    }
+}
+
+@media (max-width: map.get($config, "viewerWidth")) and (max-aspect-ratio: 1) {
+    #screen {
+        width: 100vw;
+        height: auto;
+    }
+}

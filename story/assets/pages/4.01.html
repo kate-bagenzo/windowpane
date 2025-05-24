@@ -1,0 +1,4333 @@
+<!DOCTYPE html><html lang="en" data-remix-generation="1" data-editor-live="https://kool.tools/bipsi" style="--tile-px: 8px; --tile-select-zoom: 5; --tileset-background-size: 640px 40px;" data-app-mode="player"><head>
+    <title>bipsi</title>
+    <meta charset="utf-8">
+    <link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAMAAAAoLQ9TAAAAAXNSR0IArs4c6QAAAAxQTFRFAAAAAxmR8+/s3i5SinG4LAAAAAR0Uk5TAP///7MtQIgAAABGSURBVBiVlY9BDgAgCMPY/P+fhQlo9GQTknXxMM0CCivYpA+PcQCXu8RVcxeeBav5K6CC6RDsVajCtiB3HJ5TL99vnv8qTuMLAYu9aKwhAAAAAElFTkSuQmCC">
+    <!-- scripts-->
+    <script>const wrap = {};
+
+/** 
+ * @param {Function} first
+ * @param {Function} second
+ */
+wrap.sequenced = function(first, second) {
+    return function(...args) {
+        const intermediate = first.call(this, ...args);
+        
+        // if the first returned a promise, return promise of second chained
+        // after first. otherwise just return the result of second (which may
+        // or may not be a promise)
+        if (intermediate?.then) {
+            return intermediate.then(() => second.call(this, ...args));
+        } else {
+            return second.call(this, ...args);
+        }
+    }
+}
+
+wrap.before = function(object, method, callback) {
+    const original = object[method];
+    object[method] = wrap.sequenced(callback, original);
+}
+
+wrap.after = function(object, method, callback) {
+    const original = object[method];
+    object[method] = wrap.sequenced(original, callback);
+}
+
+wrap.replace = function(object, method, callback) {
+    object[method] = callback;
+}
+
+wrap.splice = function(object, method, callback) {
+    const original = object[method];
+
+    object[method] = function (...args) {
+        return callback.call(this, original, ...args);
+    };
+}
+
+    </script>
+    <script>"strict"
+const maker = {};
+const ui = {};
+
+/**
+ * @template TProject
+ * @typedef {(project: TProject) => string[]} maker.ManifestFunction
+ */
+
+/**
+ * @typedef {Object} ResourceData
+ * @property {string} type
+ * @property {any} data
+ */
+
+/**
+ * @typedef {Object.<string, ResourceData>} maker.ResourceBundle
+ */
+
+/**
+ * @template TProject
+ * @typedef {Object} maker.ProjectBundle
+ * @property {TProject} project
+ * @property {maker.ResourceBundle} resources
+ */
+
+/**
+ * @template TData
+ * @template TInstance
+ * @typedef {Object} maker.ResourceHandler
+ * @property {(data: TData) => Promise<TInstance>} load
+ * @property {(instance: TInstance) => Promise<TInstance>} copy
+ * @property {(instance: TInstance) => Promise<TData>} save
+ */
+
+/** @type {Map<string, maker.ResourceHandler<any, any>>} */
+maker.resourceHandlers = new Map();
+
+// add a resource type called "canvas-datauri" that describes how to load a
+// canvas rendering context from a datauri, how to copy one, and how to convert
+// one back into a datauri
+maker.resourceHandlers.set("canvas-datauri", {
+    load: async (data) => imageToRendering2D(await loadImage(data)),
+    copy: async (instance) => copyRendering2D(instance),
+    save: async (instance) => instance.canvas.toDataURL("image/png", 1),
+});
+
+maker.resourceHandlers.set("file-datauri", {
+    load: async (data) => new File([await fetch(data.uri).then((r) => r.blob())], data.name, { type: data.type }),
+    copy: async (instance) => new File([await instance.arrayBuffer()], instance.name, { type: instance.type }),
+    save: async (instance) => ({ 
+        name: instance.name, 
+        uri: await maker.dataURIFromFile(instance), 
+        type: instance.type,
+    }),
+});
+
+maker.ResourceManager = class {
+    constructor() {
+        this.lastId = 0;
+        /** @type {Map<string, { type: string, instance: any }>} */
+        this.resources = new Map();
+    }
+
+    /**
+     * Generate a new unique id for a resource.
+     * @returns {string}
+     */
+    generateId() {
+        this.lastId += 1;
+        // just next lowest unused number
+        while (this.resources.has(this.lastId.toString())) {
+            this.lastId += 1;
+        }
+
+        return this.lastId.toString();
+    }
+    
+    /**
+     * Clear all resources.
+     */
+    clear() {
+        this.resources.clear();
+    }
+
+    /**
+     * Get the resource instance with the given id.
+     * @param {string} id 
+     * @returns {any}
+     */
+    get(id) {
+        return this.resources.get(id)?.instance;
+    }
+
+    /**
+     * Add a resource instance at a specific id.
+     * @param {string} id 
+     * @param {any} instance 
+     * @param {string} type 
+     */
+    set(id, instance, type) {
+        this.resources.set(id, { type, instance });
+    }
+
+    /**
+     * Add an instance as a new resource and return its new id.
+     * @param {any} instance 
+     * @param {string} type 
+     * @returns {string}
+     */
+    add(instance, type) {
+        const id = this.generateId();
+        this.set(id, instance, type);
+        return id;
+    }
+
+    /**
+     * Copy the existing resource with the given id and add it as a new resource.
+     * @param {string} id 
+     * @returns 
+     */
+    async fork(id) {
+        const source = this.resources.get(id);
+        const forkId = this.generateId();
+        const instance = await maker.resourceHandlers.get(source.type).copy(source.instance); 
+        this.set(forkId, instance, source.type);
+        return { id: forkId, instance };
+    }
+
+    /**
+     * Discard all resources except those at the ids given.
+     * @param {Iterable<string>} keepIds 
+     */
+    prune(keepIds) {
+        const ids = new Set(keepIds);
+
+        this.resources.forEach((_, id) => {
+            if (!ids.has(id)) this.resources.delete(id);
+        });
+    }
+
+    /**
+     * Copy all resources from another resource manager.
+     * @param {maker.ResourceManager} other 
+     */
+    async copyFrom(other) {
+        const tasks = [];
+        Array.from(other.resources).forEach(([id, { type, instance }]) => {
+            const task = maker.resourceHandlers.get(type)
+                         .copy(instance)
+                         .then((copy) => this.set(id, copy, type));
+            tasks.push(task);
+        });
+
+        return Promise.all(tasks);
+    }
+
+    /**
+     * Save all resources in an object mapping id to type and save data.
+     * @param {Iterable<string>} ids 
+     * @returns {Promise<maker.ResourceBundle>}
+     */
+    async save(ids) {
+        /** @type {maker.ResourceBundle} */
+        const bundle = {};
+
+        const resourceIds = new Set(ids);
+        const relevant = Array.from(this.resources)
+                         .filter(([id]) => resourceIds.has(id));
+
+        const tasks = [];
+        Array.from(relevant).forEach(([id, { type, instance }]) => {
+            const task = maker.resourceHandlers.get(type)
+                         .save(instance)
+                         .then((data) => bundle[id] = { type, data });
+            tasks.push(task);
+        });
+
+        await Promise.all(tasks);
+        return bundle;
+    }
+
+    /**
+     * Load all resources from the given bundle.
+     * @param {maker.ResourceBundle} bundle 
+     */
+    async load(bundle) {
+        const tasks = [];
+        Object.entries(bundle).forEach(([id, { type, data }]) => {
+            const task = maker.resourceHandlers.get(type)
+                         .load(data)
+                         .then((instance) => this.set(id, instance, type));
+            tasks.push(task);
+        });
+        return Promise.all(tasks);
+    }
+}
+
+/**
+ * 
+ * @template TState
+ */
+maker.StateManager = class extends EventTarget {
+    /**
+     * Create a state manager, optionally providing a function that describes
+     * how to determine resource dependencies of a given state. 
+     * @param {maker.ManifestFunction<TState>} getManifest 
+     */
+    constructor(getManifest = undefined) {
+        super();
+
+        /** @type {maker.ManifestFunction<TState>} */
+        this.getManifest = getManifest || (() => []);
+        this.resources = new maker.ResourceManager();
+
+        /** @type {TState[]} */
+        this.history = [];
+        this.index = -1;
+        this.historyLimit = 20;
+    }
+
+    /**
+     * The present state in history.
+     */
+    get present() {
+        return this.history[this.index];
+    }
+
+    /**
+     * Is there any edit history to undo to?
+     */
+    get canUndo() {
+        return this.index > 0;
+    }
+
+    /**
+     * Are there any undone edits to redo?
+     */
+    get canRedo() {
+        return this.index < this.history.length - 1;
+    }
+
+    /**
+     * Replace all state with the project and resources in the given project
+     * bundle.
+     * @param {maker.ProjectBundle<TState>} bundle
+     */
+    async loadBundle(bundle) {
+        this.history.length = 0;
+        this.history.push(bundle.project);
+        this.index = 0;
+        this.resources.clear();
+        await this.resources.load(bundle.resources);
+
+        this.changed();
+    }
+
+    /**
+     * Replace all state by copying from another state manager.
+     * @param {maker.StateManager<TState>} other 
+     */
+    async copyFrom(other) {
+        this.history = COPY(other.history);
+        this.index = other.index;
+        
+        this.resources.clear();
+        await this.resources.copyFrom(other.resources);
+        
+        this.changed();
+    }
+    
+    /**
+     * Replace all state by copying just the present and dependent resources
+     * from another state manager.
+     * @param {maker.StateManager<TState>} other 
+     */
+    async copyPresentFrom(other) {
+        this.history = [COPY(other.present)];
+        this.index = 0;
+        this.resources.clear();
+
+        // TODO: only copy what's not going to be pruned..
+        await this.resources.copyFrom(other.resources);
+        this.pruneResources();
+        
+        this.changed();
+    }
+
+    /**
+     * Copy the present state and dependent resources into a project bundle.
+     * @returns {Promise<maker.ProjectBundle<TState>>}
+     */
+    async makeBundle() {
+        const project = COPY(this.present);
+        const resources = await this.resources.save(this.getManifest(this.present));
+
+        return { project, resources };
+    }
+
+    /**
+     * Save the current state as a checkpoint in history that can be returned to
+     * with undo/redo.
+     */
+    makeCheckpoint() {
+        this.history.length = this.index + 1;
+        
+        const currentData = this.present;
+
+        this.history[this.index] = COPY(currentData);
+        this.history.push(currentData);
+        
+        if (this.index < this.historyLimit) {
+            this.index += 1;
+        } else {
+            // delete earliest history
+            this.history.splice(0, 1);
+            this.pruneResources();
+        }
+    }
+
+    /**
+     * Dispatch the change event signalling that the present state has been
+     * updated.
+     */
+    changed() {
+        this.dispatchEvent(new CustomEvent("change"));
+    }
+
+    /**
+     * Discard all resources that are no longer required accord to the manifest
+     * function.
+     */
+    pruneResources() {
+        this.resources.prune(this.history.flatMap(this.getManifest));
+    }
+
+    /**
+     * Make a history checkpoint, replace the current state with a forked
+     * version via callback, and then dispatch the change event.
+     * @param {(data: TState) => Promise} action 
+     */
+    async makeChange(action) {
+        this.makeCheckpoint();
+        await action(this.present);
+        this.changed();
+    }
+
+    /**
+     * Revert the state to the previous checkpoint in history.
+     */
+    undo() {
+        if (!this.canUndo) return;
+        this.index -= 1;
+        this.changed();
+    }
+
+    /**
+     * Return the state to the most recently undone checkpoint in history.
+     */
+    redo() {
+        if (!this.canRedo) return;
+        this.index += 1;
+        this.changed();
+    }
+};
+
+/**
+ * Ask the browser to download the given blob as a file with the given name.
+ * @param {Blob} blob 
+ * @param {string} name
+ */
+maker.saveAs = function(blob, name) {
+    const element = document.createElement("a");
+    const url = window.URL.createObjectURL(blob);
+    element.href = url;
+    element.download = name;
+    element.click();
+    window.URL.revokeObjectURL(url);
+};
+
+/**
+ * Open the browser file picker, optionally restricted to files of a given file
+ * type pattern and optionally accepting multiple files. 
+ * @param {string} accept 
+ * @param {boolean} multiple 
+ * @returns {Promise<File[]>}
+ */
+ maker.pickFiles = async function(accept = "*", multiple = false) {
+    return new Promise((resolve) => {
+        const fileInput = html("input", { type: "file", accept, multiple, style: "visibility: collapse" });
+        
+        document.body.append(fileInput);
+        function done(files) {
+            fileInput.remove();
+            resolve(files);
+        } 
+
+        fileInput.addEventListener("change", () => done(Array.from(fileInput.files)));
+        fileInput.addEventListener("cancel", () => done([]));
+        fileInput.click();
+    });
+}
+
+/**
+ * Read plain text from a file.
+ * @param {File} file 
+ * @return {Promise<string>}
+ */
+maker.textFromFile = async function(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = reject;
+        reader.onload = () => resolve(/** @type {string} */ (reader.result));
+        reader.readAsText(file); 
+    });
+}
+
+/**
+ * Read image from a file.
+ * @param {File} file 
+ * @return {Promise<string>}
+ */
+maker.dataURIFromFile = async function(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = reject;
+        reader.onload = () => resolve(/** @type {string} */ (reader.result));
+        reader.readAsDataURL(file); 
+    });
+}
+
+/**
+ * Create a DOM for an html page from html source code
+ * @param {string} source
+ * @returns 
+ */
+maker.htmlFromText = function(source) {
+    const template = document.createElement('template');
+    template.innerHTML = source;
+    return template.content;
+}
+
+/**
+ * @param {string} text 
+ */
+maker.textToBlob = function(text, type = "text/plain") {
+    return new Blob([text], { type });
+}
+
+/**
+ * 
+ * @param {ParentNode} html 
+ */
+maker.bundleFromHTML = function(html, query="#bundle-embed") {
+    const json = ONE(query, html)?.textContent;
+    const bundle = json ? JSON.parse(json) : undefined;
+    return bundle;
+}
+
+class RadioGroupWrapper extends EventTarget {
+    /** @param {HTMLInputElement[]} inputs */
+    constructor(inputs) {
+        super();
+
+        const group = this;
+        this.onRadioChange = function() {
+            if (!this.checked) return;
+            group.dispatchEvent(new CustomEvent("change"));
+        }
+
+        this.inputs = [];
+        this.replaceInputs(inputs);
+    }
+
+    get selectedIndex() {
+        return this.inputs.findIndex((button) => button.checked); 
+    }
+
+    set selectedIndex(value) {
+        this.inputs[value].click();
+    }
+
+    get selectedInput() {
+        return this.inputs[this.selectedIndex];
+    }
+
+    get value() {
+        return this.selectedInput?.value;
+    }
+    
+    get valueAsNumber() {
+        return parseInt(this.selectedInput?.value ?? "-1", 10);
+    }
+
+    setSelectedIndexSilent(value) {
+        this.inputs.forEach((input, index) => input.checked = index === value);
+    }
+
+    setValueSilent(value) {
+        value = value.toString();
+        this.inputs.forEach((input) => input.checked = input.value === value);
+    }
+
+    /**
+     * @param {HTMLElement} element 
+     * @param  {...string} values 
+     */
+    tab(element, ...values) {
+        this.addEventListener("change", () => element.hidden = !values.includes(this.value));
+    }
+
+    /**
+     * @param {HTMLInputElement} radioElement 
+     */
+    add(radioElement) {
+        this.inputs.push(radioElement);
+        radioElement.addEventListener("change", this.onRadioChange);
+    }
+
+    /**
+     * @param {HTMLInputElement} radioElement 
+     */
+    remove(radioElement) {
+        arrayDiscard(this.inputs, radioElement);
+        radioElement.removeEventListener("change", this.onRadioChange);
+    }
+
+    removeAll() {
+        this.inputs.forEach((element) => element.removeEventListener("change", this.onRadioChange));
+        this.inputs.length = 0;
+    }
+
+    replaceInputs(inputs) {
+        this.removeAll();
+        inputs.forEach((input) => this.add(input));
+    }
+}
+
+class CheckboxWrapper extends EventTarget {
+    /** @param {HTMLInputElement[]} inputs */
+    constructor(inputs) {
+        super();
+        this.inputs = inputs;
+
+        inputs.forEach((input) => {
+            input.addEventListener("change", () => {
+                this.setCheckedSilent(input.checked);
+                this.dispatchEvent(new CustomEvent("change"));
+            });
+        });
+    }
+
+    get checked() {
+        return this.inputs[0].checked; 
+    }
+
+    set checked(value) {
+        if (this.checked !== value) this.inputs[0].click();
+    }
+
+    setCheckedSilent(value) {
+        this.inputs.forEach((input) => input.checked = value);
+    }
+}
+
+class ButtonAction extends EventTarget {
+    /** @param {HTMLButtonElement[]} buttons */
+    constructor(buttons) {
+        super();
+        this.buttons = buttons;
+        this.disabled = false;
+        this.clickListener = () => this.invoke();
+        this.buttons.forEach((button) => {
+            button.addEventListener("click", this.clickListener);
+        });
+    }
+
+    get disabled() {
+        return this._disabled;
+    }
+
+    set disabled(value) {
+        this._disabled = value;
+        this.buttons.forEach((button) => button.disabled = value);
+    }
+
+    invoke(force = false) {
+        if (!force && this.disabled) return;
+        this.dispatchEvent(new CustomEvent("invoke"));
+    }
+
+    detach() {
+        this.buttons.forEach((button) => {
+            button.removeEventListener("click", this.clickListener);
+        });
+        this.disabled = false;
+        this.buttons = [];
+    }
+}
+
+/**
+ * Get a wrapper for the radio input elements sharing the given name.
+ * @param {string} name
+ * @returns {RadioGroupWrapper}
+ */
+ui.radio = (name) => new RadioGroupWrapper(ALL(`input[type="radio"][name="${name}"]`));
+
+ui.toggle = (name) => new CheckboxWrapper(ALL(`input[type="checkbox"][name="${name}"]`));
+
+/**
+ * @param {string} name 
+ * @returns {HTMLInputElement}
+ */
+ui.slider = (name) => ONE(`input[type="range"][name=${name}]`);
+
+/**
+ * @param {string} name 
+ * @returns {HTMLInputElement | HTMLTextAreaElement}
+ */
+ui.text = (name) => ONE(`[name=${name}]`);
+
+/** @type {Map<string, ButtonAction>} */
+ui.actions = new Map();
+/**
+ * Get an action linked to all button elements sharing the given name. 
+ * Optionally provide a default listener for the action.
+ * @param {string} name
+ * @param {() => void} listener
+ * @returns {ButtonAction}
+ */
+ui.action = function (name, listener=undefined) {
+    const action = new ButtonAction(ALL(`button[name="${name}"]`));
+    ui.actions.set(name, action);
+    if (listener) action.addEventListener("invoke", listener);
+    return action;
+}
+
+/**
+ * Get the html select element with the given name.
+ * @param {string} name
+ * @returns {HTMLSelectElement}
+ */
+ui.select = (name) => ONE(`select[name="${name}"]`);
+
+/**
+ * Get a child element matching CSS selector.
+ * @param {string} query 
+ * @param {ParentNode} element 
+ * @returns {HTMLElement}
+ */
+const ONE = (query, element = undefined) => (element || document).querySelector(query);
+
+/**
+ * Get all children elements matching CSS selector.
+ * @param {string} query 
+ * @param {HTMLElement | Document} element 
+ * @returns {HTMLElement[]}
+ */
+const ALL = (query, element = undefined) => Array.from((element || document).querySelectorAll(query));
+
+/**
+ * @template {any} T
+ * @param {T[]} array 
+ * @param {T} value
+ * @returns {boolean}
+ */
+ function arrayDiscard(array, value) {
+    const index = array.indexOf(value);
+    if (index >= 0) array.splice(index, 1);
+    return index >= 0;
+}
+
+ui.PointerDrag = class extends EventTarget {
+    /** 
+     * @param {MouseEvent} event
+     */
+    constructor(event, { clickMovementLimit = 5 } = {}) {
+        super();
+        this.pointerId = event["pointerId"];
+        this.clickMovementLimit = 5;
+        this.totalMovement = 0;
+
+        this.downEvent = event;
+        this.lastEvent = event;
+
+        this.listeners = {
+            "pointerup": (event) => {
+                if (event.pointerId !== this.pointerId) return;
+
+                this.lastEvent = event;
+                this.unlisten();
+                this.dispatchEvent(new CustomEvent("up", { detail: event }));
+                if (this.totalMovement <= clickMovementLimit) {
+                    this.dispatchEvent(new CustomEvent("click", { detail: event }));
+                }
+            },
+
+            "pointermove": (event) => {
+                if (event.pointerId !== this.pointerId) return;
+
+                this.lastEvent = event;
+                this.totalMovement += Math.abs(event.movementX);
+                this.totalMovement += Math.abs(event.movementY);
+                this.dispatchEvent(new CustomEvent("move", { detail: event }));
+            }
+        }
+
+        document.addEventListener("pointerup", this.listeners.pointerup);
+        document.addEventListener("pointermove", this.listeners.pointermove);
+    }
+
+    unlisten() {
+        document.removeEventListener("pointerup", this.listeners.pointerup);
+        document.removeEventListener("pointermove", this.listeners.pointermove);
+    }
+}
+
+/**
+ * Wrap a pointer down event and track its subsequent movement until release.
+ * @param {PointerEvent} event 
+ * @returns {ui.PointerDrag}
+ */
+ui.drag = (event) => new ui.PointerDrag(event);
+
+/**
+ * @param {HTMLCanvasElement} canvas 
+ * @param {MouseEvent} event 
+ */
+ function mouseEventToCanvasPixelCoords(canvas, event) {
+    const bounds = canvas.getBoundingClientRect();
+    const [mx, my] = [event.clientX - bounds.x, event.clientY - bounds.y];
+    const scale = canvas.width / canvas.clientWidth; 
+    const [px, py] = [Math.floor(mx * scale), Math.floor(my * scale)];
+    return { x: px, y: py };
+}
+
+/**
+ * @param {HTMLCanvasElement} canvas 
+ * @param {ui.PointerDrag} drag 
+ */
+function trackCanvasStroke(canvas, drag) {
+    const positions = [mouseEventToCanvasPixelCoords(canvas, drag.downEvent)];
+    const update = (event) => positions.push(mouseEventToCanvasPixelCoords(canvas, event.detail));
+    drag.addEventListener("up", update);
+    drag.addEventListener("move", update);
+    return positions;
+}
+
+// from https://github.com/ai/nanoid/blob/master/non-secure/index.js
+const urlAlphabet = 'ModuleSymbhasOwnPr-0123456789ABCDEFGHNRVfgctiUvz_KqYTJkLxpZXIjQW';
+function nanoid(size = 21) {
+    let id = '';
+    let i = size;
+    while (i--) id += urlAlphabet[(Math.random() * 64) | 0];
+    return id
+}
+
+/**
+ * Deep copy an object by serializing it to json and parsing it again.
+ * @template T
+ * @param {T} object
+ * @returns {T}
+ */
+const COPY = (object) => JSON.parse(JSON.stringify(object));
+
+/**
+ * Create an array of zeroes to the given length.
+ * @param {number} length 
+ * @returns {number[]}
+ */
+const ZEROES = (length) => Array(length).fill(0);
+
+/**
+ * Create an array of a value repeated to the given length.
+ * @template T
+ * @param {number} length 
+ * @param {T} value
+ * @returns {T[]}
+ */
+ const REPEAT = (length, value) => Array(length).fill(value);
+
+/**
+ * Create an html element with the given attributes and children.
+ * @template {keyof HTMLElementTagNameMap} K
+ * @param {K} tagName 
+ * @param {*} attributes 
+ * @param  {...(Node | string)} children 
+ * @returns {HTMLElementTagNameMap[K]}
+ */
+ function html(tagName, attributes = {}, ...children) {
+    const element = /** @type {HTMLElementTagNameMap[K]} */ (document.createElement(tagName)); 
+    Object.entries(attributes).forEach(([name, value]) => element.setAttribute(name, value));
+    children.forEach((child) => element.append(child));
+    return element;
+}
+
+/** @param {number} milliseconds */
+function sleep(milliseconds) {
+    return new Promise(resolve => setTimeout(resolve, milliseconds));
+}
+
+/** 
+ * @template T
+ * @param {IDBRequest<T>} request 
+ * @returns {Promise<T>}
+ */
+ function promisfyRequest(request) {
+    return new Promise((resolve, reject) => {
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+}
+
+/** 
+ * @param {IDBTransaction} transaction 
+ * @returns {Promise}
+ */
+ function promisfyTransaction(transaction) {
+    return new Promise((resolve, reject) => {
+        transaction.oncomplete = () => resolve();
+        transaction.onabort = () => reject(transaction.error);
+        transaction.onerror = () => reject(transaction.error);
+    });
+}
+
+maker.ProjectStorage = class {
+    constructor(appID, generateMeta=undefined) {
+        this.appID = appID;
+        this.generateMeta = generateMeta;
+        this.error = undefined;
+
+        this.openDatabase().then(
+            (request) => request.close(),
+            (reason) => this.error = reason,
+        );
+    }
+
+    get available() {
+        return this.error === undefined;
+    }
+
+    async openDatabase() {
+        const request = indexedDB.open(this.appID);
+        request.addEventListener("upgradeneeded", () => {
+            request.result.createObjectStore("projects");
+            request.result.createObjectStore("projects-meta");
+        });
+        return promisfyRequest(request);
+    }
+
+    async stores(mode) {
+        const db = await this.openDatabase();
+        const transaction = db.transaction(["projects", "projects-meta"], mode);
+        const projects = transaction.objectStore("projects");
+        const meta = transaction.objectStore("projects-meta");
+        return { transaction, projects, meta };
+    }
+
+    /**
+     * @returns {Promise<any[]>}
+     */
+    async list() {
+        const stores = await this.stores("readonly");
+        return promisfyRequest(stores.meta.getAll());
+    }
+
+    /**
+     * @param {any} projectData 
+     * @returns {Promise}
+     */
+    async save(projectData, key) {
+        const meta = { date: (new Date()).toISOString() };
+        if (this.generateMeta) Object.assign(meta, this.generateMeta(projectData)); 
+    
+        const stores = await this.stores("readwrite");
+        stores.projects.put(projectData, key);
+        stores.meta.put(meta, key);
+        return promisfyTransaction(stores.transaction);
+    }
+
+    /**
+     * @param {string} key
+     * @returns {Promise<any>}
+     */
+    async load(key) {
+        const stores = await this.stores("readonly");
+        return promisfyRequest(stores.projects.get(key));
+    }
+
+    /**
+     * @param {string} key
+     */
+    async delete(key) {
+        const stores = await this.stores("readwrite");
+        stores.projects.delete(key);
+        stores.meta.delete(key);
+        return promisfyTransaction(stores.transaction);
+    }
+}
+
+    </script>
+    <script>/**
+ * @param {number} width
+ * @param {number} height
+ * @returns {CanvasRenderingContext2D}
+ */
+function createRendering2D(width, height) {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    context.imageSmoothingEnabled = false;
+    return context;
+}
+
+/**
+ * @param {CanvasRenderingContext2D} rendering 
+ * @param {string | CanvasGradient | CanvasPattern | undefined} fillStyle
+ */
+function fillRendering2D(rendering, fillStyle = undefined) {
+    if (fillStyle !== undefined) {
+        const prevStyle = rendering.fillStyle;
+        rendering.fillStyle = fillStyle;
+        rendering.fillRect(0, 0, rendering.canvas.width, rendering.canvas.height);
+        rendering.fillStyle = prevStyle;
+    } else {
+        rendering.clearRect(0, 0, rendering.canvas.width, rendering.canvas.height);
+    }
+}
+
+/**
+ * @param {CanvasRenderingContext2D} source
+ * @param {CanvasRenderingContext2D} destination
+ * @param {{ x: number, y: number, w: number, h: number }} rect
+ */
+function copyRendering2D(
+    source, 
+    destination = undefined,
+    rect = undefined,
+) {
+    rect = rect ?? { x: 0, y: 0, w: source.canvas.width, h: source.canvas.height };
+    destination = destination || createRendering2D(rect.w, rect.h);
+    destination.canvas.width = rect.w;
+    destination.canvas.height = rect.h;
+
+    destination.drawImage(
+        source.canvas, 
+        rect.x, rect.y, rect.w, rect.h,
+        0, 0, rect.w, rect.h,
+    );
+
+    return destination;
+}
+
+/**
+ * @param {CanvasRenderingContext2D} rendering 
+ * @param {number} width 
+ * @param {number} height 
+ */
+function resizeRendering2D(rendering, width, height) {
+    const copy = copyRendering2D(rendering);
+    rendering.canvas.width = width;
+    rendering.canvas.height = height;
+    rendering.drawImage(copy.canvas, 0, 0);
+}
+
+/**
+ * @param {CanvasRenderingContext2D} rendering 
+ */
+function invertMask(rendering) {
+    withPixels(rendering, (pixels) => {
+        for (let i = 0; i < pixels.length; ++i) {
+            pixels[i] = 0xFFFFFFFF - pixels[i];
+        }
+    });
+}
+
+/**
+ * @param {CanvasRenderingContext2D} rendering 
+ * @param {number} dx
+ * @param {number} dy
+ */
+function cycleRendering2D(rendering, dx, dy) {
+    const { width, height } = rendering.canvas;
+    const sx = -Math.sign(dx);
+    const sy = -Math.sign(dy);
+
+    const temp = copyRendering2D(rendering);
+
+    fillRendering2D(rendering);
+    rendering.drawImage(temp.canvas, dx,            dy            );
+    rendering.drawImage(temp.canvas, dx + width*sx, dy            ); 
+    rendering.drawImage(temp.canvas, dx + width*sx, dy + height*sy); 
+    rendering.drawImage(temp.canvas, dx,            dy + height*sy); 
+}
+
+/**
+ * @param {CanvasRenderingContext2D} rendering 
+ */
+function mirrorRendering2D(rendering) {
+    const prevComposite = rendering.globalCompositeOperation;
+    rendering.globalCompositeOperation = "copy";
+    rendering.scale(-1, 1);
+    rendering.drawImage(rendering.canvas, -rendering.canvas.width, 0);
+    rendering.globalCompositeOperation = prevComposite;
+}
+
+/**
+ * @param {CanvasRenderingContext2D} rendering 
+ */
+ function flipRendering2D(rendering) {
+    const prevComposite = rendering.globalCompositeOperation;
+    rendering.globalCompositeOperation = "copy";
+    rendering.scale(1, -1);
+    rendering.drawImage(rendering.canvas, 0, -rendering.canvas.height);
+    rendering.globalCompositeOperation = prevComposite;
+}
+
+/**
+ * @param {CanvasRenderingContext2D} rendering 
+ * @param {number} turns
+ */
+ function turnRendering2D(rendering, turns=1) {
+    const { width, height } = rendering.canvas;
+    const prevComposite = rendering.globalCompositeOperation;
+
+    rendering.globalCompositeOperation = "copy";
+    rendering.setTransform(1, 0, 0, 1, width/2, height/2);
+    rendering.rotate(turns * Math.PI / 2);
+    rendering.drawImage(rendering.canvas, -width/2, -height/2);
+    rendering.globalCompositeOperation = prevComposite;
+}
+
+/**
+ * @callback pixelsAction
+ * @param {Uint32Array} pixels
+ */
+
+/**
+ * @param {CanvasRenderingContext2D} rendering 
+ * @param {pixelsAction} action 
+ */
+function withPixels(rendering, action) {
+    const imageData = rendering.getImageData(0, 0, rendering.canvas.width, rendering.canvas.height);
+    action(new Uint32Array(imageData.data.buffer));
+    rendering.putImageData(imageData, 0, 0);
+}
+
+/**
+ * @param {CanvasRenderingContext2D} mask 
+ * @param {string} style 
+ * @param {CanvasRenderingContext2D} destination 
+ */
+function recolorMask(mask, style, destination = undefined) {
+    const recolored = copyRendering2D(mask, destination);
+    recolored.globalCompositeOperation = "source-in";
+    fillRendering2D(recolored, style);
+    return recolored;
+}
+
+/**
+ * @param {number} x0 
+ * @param {number} y0 
+ * @param {number} x1 
+ * @param {number} y1 
+ * @param {(x: number, y: number) => void} plot 
+ */
+// adapted from https://stackoverflow.com/a/34267311
+function lineplot(x0, y0, x1, y1, plot) {
+    x0 |= 0; y0 |= 0; x1 |= 0; y1 |= 0;
+
+    const steep = Math.abs(y1 - y0) > Math.abs(x1 - x0);
+    if (steep) [x0, y0, x1, y1] = [y0, x0, y1, x1];
+
+    const dx = Math.abs(x1 - x0);
+    const dy = Math.abs(y1 - y0);
+    const ystep = Math.sign(y1 - y0);
+    const xstep = Math.sign(x1 - x0);
+
+    let err = Math.floor(dx / 2);
+    let y = y0;
+
+    if (dx === 0 && dy === 0) {
+        plot(x0, y0);
+    }
+
+    for (let x = x0; x != (x1 + xstep); x += xstep) {
+        plot(steep ? y : x, steep ? x : y);
+        err -= dy;
+        if (err < 0) {
+            y += ystep;
+            err += dx;
+        }
+    }
+}
+
+/**
+ * @param {CanvasRenderingContext2D} rendering 
+ * @param {number} x 
+ * @param {number} y 
+ * @param {number} color
+ */
+function floodfill(rendering, x, y, color, tolerance = 5) {
+    const [width, height] = [rendering.canvas.width, rendering.canvas.height];
+    withPixels(rendering, pixels => {
+        const queue = [[x, y]];
+        const done = new Array(width * height);
+        const initial = pixels[y * width + x];
+
+        const ir = initial >>>  0 & 0xFF;
+        const ig = initial >>>  8 & 0xFF;
+        const ib = initial >>> 16 & 0xFF;
+
+        function enqueue(x, y) {
+            const within = x >= 0 && y >= 0 && x < width && y < height;
+
+            if (within && !done[y * width + x]) {
+                const pixel = pixels[y * width + x];
+
+                const pr = pixel >>>  0 & 0xFF;
+                const pg = pixel >>>  8 & 0xFF;
+                const pb = pixel >>> 16 & 0xFF;
+                const dist = Math.abs(pr - ir) + Math.abs(pg - ig) + Math.abs(pb - ib);
+                
+                if (dist <= tolerance) queue.push([x, y]);
+            }
+        }
+
+        while (queue.length > 0) {
+            const [x, y] = queue.pop();
+            pixels[y * width + x] = color;
+            done[y * width + x] = true;
+
+            enqueue(x - 1, y);
+            enqueue(x + 1, y);
+            enqueue(x, y - 1);
+            enqueue(x, y + 1);
+        }
+    });
+};
+
+/**
+ * @param {CanvasRenderingContext2D} rendering 
+ * @param {number} x 
+ * @param {number} y 
+ * @param {number} color
+ * @returns {CanvasRenderingContext2D}
+ */
+ function floodfillOutput(rendering, x, y, color) {
+    const [width, height] = [rendering.canvas.width, rendering.canvas.height];
+    const output = createRendering2D(width, height);
+    withPixels(rendering, srcPixels =>
+    withPixels(output, dstPixels => {
+        const queue = [[x, y]];
+        const done = new Array(width * height);
+        const initial = srcPixels[y * width + x];
+
+        function enqueue(x, y) {
+            const within = x >= 0 && y >= 0 && x < width && y < height;
+
+            if (within && srcPixels[y * width + x] === initial && !done[y * width + x]) {
+                queue.push([x, y]);
+            }
+        }
+
+        while (queue.length > 0) {
+            const [x, y] = queue.pop();
+            dstPixels[y * width + x] = color;
+            done[y * width + x] = true;
+
+            enqueue(x - 1, y);
+            enqueue(x + 1, y);
+            enqueue(x, y - 1);
+            enqueue(x, y + 1);
+        }
+    }));
+    return output;
+};
+
+/**
+ * @param {{r:number,g:number,b:number}} rgb 
+ */
+function rgbToHex(rgb) {
+    const packed = (0xFF000000 + (rgb.r << 16) + (rgb.g << 8) + (rgb.b << 0));
+    return "#" + packed.toString(16).substr(-6);
+}
+
+/**
+ * @param {string} hex 
+ * @param {number} alpha
+ */
+function hexToUint32(hex, alpha = undefined) {
+    if (hex.charAt(0) === '#') hex = hex.substring(1);
+    if (alpha === undefined && hex.length === 8) alpha = parseInt(hex.substr(6, 2), 16);
+    if (alpha === undefined) alpha = 255;
+    hex = hex.substr(4, 2) + hex.substr(2, 2) + hex.substr(0, 2);
+    return (parseInt(hex, 16) | (alpha << 24)) >>> 0;
+}
+
+/**
+ * @param {number} number
+ * @param {string} prefix 
+ */
+function numberToHex(number, prefix = '#') {
+    number = (number | 0xff000000) >>> 0;
+    let hex = number.toString(16).substring(2, 8);
+    hex = hex.substr(4, 2) + hex.substr(2, 2) + hex.substr(0, 2);
+    return prefix + hex;
+}
+
+const MASK_PALETTE = {
+    '_': hexToUint32('#000000', 0),
+    default: hexToUint32('#FFFFFF', 255),
+};
+
+/**
+ * @param {string} text 
+ * @param {Record<string, number>} palette 
+ * @returns {CanvasRenderingContext2D}
+ */
+function textToRendering2D(text, palette = MASK_PALETTE) {
+    text = text.trim();
+    const lines = text.split('\n').map((line) => [...line.trim()]);
+
+    const width = lines[0].length;
+    const height = lines.length;
+
+    const rendering = createRendering2D(width, height);
+    withPixels(rendering, (pixels) => {
+        lines.forEach((line, y) => line.forEach((char, x) => {
+            const color = palette[char];
+            pixels[y * width + x] = color !== undefined ? color : palette.default;
+        }));
+    });
+
+    return rendering;
+}
+
+/**
+ * @param {{ h: number, s: number, v: number }} hsv
+ */
+function HSVToRGB(hsv) {
+    const { h, s, v } = hsv;
+    let r, g, b;
+    const i = Math.floor(h * 6);
+    const f = h * 6 - i;
+    const p = (1 - s);
+    const q = (1 - f * s);
+    const t = (1 - (1 - f) * s);
+    switch (i % 6) {
+        case 0: r = 1, g = t, b = p; break;
+        case 1: r = q, g = 1, b = p; break;
+        case 2: r = p, g = 1, b = t; break;
+        case 3: r = p, g = q, b = 1; break;
+        case 4: r = t, g = p, b = 1; break;
+        case 5: r = 1, g = p, b = q; break;
+    }
+
+    r *= v * 255;
+    g *= v * 255;
+    b *= v * 255;
+
+    return { r, g, b };
+}
+
+/**
+ * @param {{ r: number, g: number, b: number }} rgb
+ */
+function RGBToHSV(rgb) {
+    const { r, g, b } = rgb;
+    var max = Math.max(r, g, b), min = Math.min(r, g, b),
+        d = max - min,
+        h,
+        s = (max === 0 ? 0 : d / max),
+        v = max / 255;
+
+    switch (max) {
+        case min: h = 0; break;
+        case r: h = (g - b) + d * (g < b ? 6: 0); h /= 6 * d; break;
+        case g: h = (b - r) + d * 2; h /= 6 * d; break;
+        case b: h = (r - g) + d * 4; h /= 6 * d; break;
+    }
+
+    return { h, s, v };
+}
+
+function HSVToCone(hsv) {
+    const a = Math.PI * hsv.h;
+    const r = hsv.s * .5 * hsv.v;
+    const x = Math.cos(a) * r;
+    const y = Math.sin(a) * r;
+    return { x, y, z: hsv.v };
+}
+
+
+function uint32ToRGB(uint32) {
+    return {
+        r: uint32 >>>  0 & 0xFF,
+        g: uint32 >>>  8 & 0xFF,
+        b: uint32 >>> 16 & 0xFF,
+        uint32,
+    };
+}
+
+function hexToRGB(hex) {
+    if (hex.charAt(0) === '#') hex = hex.substring(1);
+    return {
+        b: parseInt(hex.substr(4, 2), 16),
+        g: parseInt(hex.substr(2, 2), 16),
+        r: parseInt(hex.substr(0, 2), 16),
+        uint32: hexToUint32(hex),
+    };
+}
+
+function RGBToUint32(rgb) {
+    return rgb.r | rgb.g << 8 | rgb.b << 16 | 0xFF << 24;
+}
+
+/**
+ * @param {CanvasRenderingContext2D} rendering 
+ * @param {string[]} palette 
+ */
+function recolorToPalette(rendering, palette) {
+    const paletteConverted = palette.map((hex) => { 
+        const cone = HSVToCone(RGBToHSV(hexToRGB(hex)));
+        const uint32 = hexToUint32(hex);
+        return { ...cone, uint32 };
+    });
+    const mapping = new Map();
+
+    function chooseColor(uint32) {
+        const alpha = (uint32 >>> 24) < 16;
+        if (alpha) return 0;
+
+        const existing = mapping.get(uint32);
+        if (existing) return existing;
+
+        const actual = HSVToCone(RGBToHSV(uint32ToRGB(uint32)));
+        let bestSqrDistance = Infinity;
+        let best = paletteConverted[0];
+
+        for (let candidate of paletteConverted) {
+            const dx = Math.abs(actual.x - candidate.x);
+            const dy = Math.abs(actual.y - candidate.y);
+            const dz = Math.abs(actual.z - candidate.z);
+            const sqrDistance = dx*dx + dy*dy + dz*dz;
+            
+            if (sqrDistance < bestSqrDistance) {
+                bestSqrDistance = sqrDistance;
+                best = candidate;
+            }
+        }
+
+        mapping.set(uint32, best.uint32);
+        return best.uint32;
+    }
+
+    withPixels(rendering, (pixels) => {
+        for (let i = 0; i < pixels.length; ++i) {
+            pixels[i] = chooseColor(pixels[i]);
+        }
+    });
+}
+
+/** 
+ * Copy image contents to a new canvas rendering context.
+ * @param {HTMLImageElement} image 
+ */
+function imageToRendering2D(image) {
+    const rendering = createRendering2D(image.naturalWidth, image.naturalHeight);
+    rendering.drawImage(image, 0, 0);
+    return rendering;
+}
+
+/**
+ * Create an html image from a given src (probably a datauri).
+ * @param {string} src
+ * @returns {Promise<HTMLImageElement>}
+ */
+async function loadImage(src) {
+    return imageLoadWaiter(loadImageLazy(src));
+}
+
+/**
+ * Create an html image from a given src (probably a datauri).
+ * @param {string} src
+ * @returns {HTMLImageElement}
+ */
+function loadImageLazy(src) {
+    const image = document.createElement("img");
+    image.src = src;
+    return image;
+}
+
+/**
+ * Await any pending loading of an html image.
+ * @param {HTMLImageElement} image
+ * @returns {Promise<HTMLImageElement>}
+ */
+async function imageLoadWaiter(image) {
+    if (image.complete) {
+        return Promise.resolve(image);
+    } else {
+        return new Promise((resolve, reject) => {
+            image.addEventListener("load", () => resolve(image));
+            image.addEventListener("error", reject);
+        });
+    }
+}
+
+/**
+ * In the given rendering, replace every instance of a color in the prev palette
+ * with the corresponding color in the next palette, ignoring colors that don't
+ * appear. This is broken in firefox because colors are not stored exactly. 
+ * @param {CanvasRenderingContext2D} rendering 
+ * @param {string[]} prev 
+ * @param {string[]} next 
+ */
+ function swapPalette(rendering, prev, next) {
+    const mapping = new Map();
+    prev.forEach((pixel, index) => mapping.set(prev[index], next[index]));
+
+    withPixels(rendering, (pixels) => {
+        for (let i = 0; i < pixels.length; ++i) {
+            pixels[i] = mapping.get(pixels[i]) || pixels[i];
+        }
+    });
+}
+
+/**
+ * Replace every color in the given rendering. Each existing color is matched
+ * to the closest color in the prev palette and replaced with the corresponding
+ * color in the next palette. 
+ * @param {CanvasRenderingContext2D} rendering 
+ * @param {number[]} prev 
+ * @param {number[]} next 
+ */
+function swapPaletteSafe(rendering, prev, next) {
+    const mapping = new Map();
+    for (let i = 0; i < prev.length; ++i) {
+        mapping.set(prev[i], next[i % next.length]);
+    }
+
+    function addMissing(prevPixel) {
+        let bestDistance = Infinity;
+        let bestNextPixel = next[0];
+
+        const pr = prevPixel >>>  0 & 0xFF;
+        const pg = prevPixel >>>  8 & 0xFF;
+        const pb = prevPixel >>> 16 & 0xFF;
+
+        for (let i = 0; i < prev.length; ++i) {
+            const target = prev[i];
+            const tr = target >>>  0 & 0xFF;
+            const tg = target >>>  8 & 0xFF;
+            const tb = target >>> 16 & 0xFF;
+
+            const dist = Math.abs(pr - tr) 
+                       + Math.abs(pg - tg) 
+                       + Math.abs(pb - tb);
+
+            if (dist < bestDistance) {
+                bestDistance = dist;
+                bestNextPixel = next[i];
+            }
+        }
+
+        mapping.set(prevPixel, bestNextPixel);
+        return bestNextPixel;
+    }
+
+    withPixels(rendering, (pixels) => {
+        for (let i = 0; i < pixels.length; ++i) {
+            const prev = pixels[i];
+            pixels[i] = mapping.get(prev) ?? addMissing(prev);
+        }
+    });
+}
+
+/**
+ * @param {HTMLCanvasElement} canvas 
+ */
+async function canvasToBlob(canvas) {
+    return new Promise((resolve) => canvas.toBlob(resolve));
+}
+
+    </script>
+    <script>/**
+ * @typedef {Object} Vector2
+ * @property {number} x
+ * @property {number} y
+ */
+
+/**
+ * @typedef {Object} Rect
+ * @property {number} x
+ * @property {number} y
+ * @property {number} width
+ * @property {number} height
+ */
+
+/**
+ * @param {number} min 
+ * @param {number} max 
+ */
+ function range(min, max) {
+    return Array.from(new Array(max-min+1), (x, i) => i + min);
+}
+
+/**
+ * @typedef {Object} BlitsyFontCharacter
+ * @property {number} codepoint
+ * @property {CanvasImageSource} image
+ * @property {Rect} rect
+ * @property {number} spacing
+ * @property {Vector2?} offset
+ */
+
+/**
+ * @typedef {Object} BipsiDataFont
+ * @property {string} name
+ * @property {number} charWidth
+ * @property {number} charHeight
+ * @property {number[][]} runs
+ * @property {Object.<number, { spacing: number, offset: Vector2, size: Vector2 }>} special
+ * @property {string} atlas
+ */
+
+/**
+ * @typedef {Object} BlitsyFont
+ * @property {string} name
+ * @property {number} lineHeight
+ * @property {Map<number, BlitsyFontCharacter>} characters
+ */
+
+/**
+ * @typedef {Object} BlitsyGlyph
+ * @property {HTMLCanvasElement} image
+ * @property {Rect} rect
+ * @property {Vector2} position
+ * @property {Vector2} offset
+ * @property {boolean} hidden
+ * @property {string} fillStyle
+ * @property {Map<string, any>} styles
+ */
+
+/**
+ * @typedef {Object} BlitsyTextRenderOptions
+ * @property {BlitsyFont} font
+ * @property {number} lineCount
+ * @property {number} lineWidth
+ * @property {number} lineGap
+ */
+
+/** @typedef {BlitsyGlyph[]} BlitsyPage */
+
+/**
+ * @param {BipsiDataFont} data
+ */
+async function loadBipsiFont(data) {
+    const font = {
+        name: data.name,
+        lineHeight: data.charHeight,
+        characters: new Map(),
+    }
+
+    const atlas = await loadImage(data.atlas);
+    const cols = atlas.naturalWidth / data.charWidth;
+
+    const indexes = data.runs.flatMap(([start, end]) => range(start, end ?? start));
+
+    indexes.forEach((codepoint, i) => {
+        const col = i % cols;
+        const row = Math.floor(i / cols);
+        
+        const special = data.special?.[codepoint];
+        const size = special?.size;
+
+        const rect = { 
+            x: col * data.charWidth, 
+            y: row * data.charHeight, 
+            width: size?.x ?? data.charWidth, 
+            height: size?.y ?? data.charHeight,
+        };
+
+        const spacing = special?.spacing ?? rect.width;
+        const offset = special?.offset;
+
+        font.characters.set(codepoint, { codepoint, image: atlas, rect, spacing, offset });
+    });
+
+    return font;
+}
+
+/** @param {HTMLScriptElement} script */
+async function loadBasicFont(script) {
+    const atlasdata = script.innerHTML;
+    const charWidth = parseInt(script.getAttribute("data-char-width"), 10);
+    const charHeight = parseInt(script.getAttribute("data-char-height"), 10);
+    const indexes = parseRuns(script.getAttribute("data-runs"));
+
+    const atlas = await loadImage(atlasdata);
+    const cols = atlas.naturalWidth / charWidth;
+
+    const font = {
+        name: "font",
+        lineHeight: charHeight,
+        characters: new Map(),
+    };
+
+    indexes.forEach((codepoint, i) => {
+        const col = i % cols;
+        const row = Math.floor(i / cols);
+
+        const rect = { 
+            x: col * charWidth, 
+            y: row * charHeight, 
+            width: charWidth, 
+            height: charHeight,
+        };
+
+        font.characters.set(codepoint, { codepoint, image: atlas, rect, spacing: charWidth, offset: { x: 0, y: 0 } });
+    });
+
+    return font;
+}
+
+/** @param {string} data */
+function parseRuns(data) {
+    const runs = data.split(",").map((run) => {
+        const [start, end] = run.split("-").map((index) => parseInt(index, 10));
+        return [ start, end ?? start ];
+    });
+    const indexes = [];
+    runs.forEach(([min, max]) => indexes.push(...range(min, max)));
+    return indexes;
+}
+
+/**
+ * @param {BlitsyFont} font 
+ * @param {string} char 
+ */
+function getFontChar(font, char) {
+    const codepoint = char.codePointAt(0);
+    return font.characters.get(codepoint);
+}
+
+/** 
+ * @param {BlitsyPage} page 
+ * @param {number} width
+ * @param {number} height
+ * @param {number} ox
+ * @param {number} oy
+ */
+function renderPage(page, width, height, ox = 0, oy = 0)
+{
+    const result = createRendering2D(width, height);
+    const buffer = createRendering2D(width, height);
+
+    for (const glyph of page)
+    {
+        if (glyph.hidden) continue;
+
+        // padding + position + offset
+        const x = ox + glyph.position.x + glyph.offset.x;
+        const y = oy + glyph.position.y + glyph.offset.y;
+        
+        const {
+            x: glyphX,
+            y: glyphY,
+            width: glyphWidth,
+            height: glyphHeight,
+        } = glyph.rect;
+
+        // draw tint layer
+        result.fillStyle = glyph.fillStyle;
+        result.fillRect(x, y, glyphWidth, glyphHeight);
+        
+        // draw text layer
+        buffer.drawImage(glyph.image, glyphX, glyphY, glyphWidth, glyphHeight, x, y, glyphWidth, glyphHeight);
+    }
+
+    // draw text layer in tint color
+    result.globalCompositeOperation = 'destination-in';
+    result.drawImage(buffer.canvas, 0, 0);
+
+    return result;
+}
+
+const defaultStyleHandler = (styles, style) => {
+    if (style.substr(0, 1) === "+") {
+        styles.set(style.substring(1), true);
+    } else if (style.substr(0, 1) === "-") {
+        styles.delete(style.substring(1));
+    } else if (style.includes("=")) {
+        const [key, val] = style.split(/\s*=\s*/);
+        styles.set(key, val);
+    }
+}
+
+/**
+ * @param {string} script 
+ * @param {BlitsyTextRenderOptions} options 
+ * @param {*} styleHandler 
+ * @returns {BlitsyPage[]}
+ */
+function scriptToPages(script, options, styleHandler = defaultStyleHandler) {
+    const tokens = tokeniseScript(script);
+    const commands = tokensToCommands(tokens);
+    return commandsToPages(commands, options, styleHandler);
+}
+
+function tokeniseScript(script) {
+    const tokens = [];
+    let buffer = "";
+    let braceDepth = 0;
+
+    function openBrace() {
+        if (braceDepth === 0) flushBuffer();
+        braceDepth += 1;
+    }
+
+    function closeBrace() {
+        if (braceDepth === 1) flushBuffer();
+        braceDepth -= 1;
+    }
+
+    function newLine() {
+        flushBuffer();
+        tokens.push(["markup", "br"]);
+    }
+
+    function flushBuffer() {
+        if (buffer.length === 0) return;
+        const type = braceDepth > 0 ? "markup" : "text";
+        tokens.push([type, buffer]);
+        buffer = "";
+    }
+
+    const actions = {
+        "{": openBrace,
+        "}": closeBrace,
+        "\n": newLine,
+    }
+
+    for (const char of script) {
+        if (char in actions)
+            actions[char]();
+        else
+            buffer += char;
+    }
+
+    flushBuffer();
+
+    return tokens;
+}
+
+function textBufferToCommands(buffer) {
+    const chars = Array.from(buffer);
+    return chars.map((char) => ({ type: "glyph", char, breakable: char === " " }));
+}
+
+function markupBufferToCommands(buffer) {
+    if (buffer === "pg") return [{ type: "break", target: "page" }];
+    if (buffer === "br") return [{ type: "break", target: "line" }];
+    else                 return [{ type: "style", style: buffer }];
+}
+
+/** @param {any[]} tokens */
+function tokensToCommands(tokens) {
+    const handlers = {
+        "text": textBufferToCommands,
+        "markup": markupBufferToCommands,
+    };
+
+    const tokenToCommands = ([type, buffer]) => handlers[type](buffer); 
+    return tokens.flatMap(tokenToCommands);
+}
+
+/**
+ * @param {*} commands 
+ * @param {BlitsyTextRenderOptions} options 
+ * @param {*} styleHandler 
+ */
+function commandsToPages(commands, options, styleHandler) {
+    commandsBreakLongSpans(commands, options);
+
+    const styles = new Map();
+    const pages = [];
+    let page = [];
+    let currLine = 0;
+
+    function newPage() {
+        pages.push(page);
+        page = [];
+        currLine = 0;
+    }
+
+    function endPage() { 
+        do { endLine(); } while (currLine % options.lineCount !== 0)
+    }
+
+    function endLine() {
+        currLine += 1;
+        if (currLine === options.lineCount) newPage();
+    }
+
+    function doBreak(target) {
+             if (target === "line") endLine();
+        else if (target === "page") endPage(); 
+    }
+
+    function findNextBreakIndex() {
+        let width = 0;
+
+        for (let i = 0; i < commands.length; ++i) {
+            const command = commands[i];
+            if (command.type === "break") return i;
+            if (command.type === "style") continue;
+
+            width += computeLineWidth(options.font, command.char);
+            // if we overshot, look backward for last possible breakable glyph
+            if (width > options.lineWidth) {
+                const result = find(commands, i, -1, command => command.type === "glyph" && command.breakable);
+                if (result) return result[1];
+            }
+        };
+    }
+
+    function addGlyph(command, offset) {
+        const char = getFontChar(options.font, command.char) ?? getFontChar(options.font, "?");
+
+        const x = offset + (char.offset?.x ?? 0);
+        const y = currLine * (options.font.lineHeight + options.lineGap) + (char.offset?.y ?? 0);
+
+        const glyph = { 
+            char: command.char,
+            image: char.image,
+            rect: char.rect,
+            position: { x, y },
+            offset: { x: 0, y: 0 },
+            hidden: true,
+            fillStyle: "white",
+            styles: new Map(styles.entries()),
+        };
+
+        page.push(glyph);
+        return char.spacing;
+    }
+
+    function generateGlyphLine(commands) {
+        let offset = 0;
+        for (const command of commands) {
+            if (command.type === "glyph") {
+                offset += addGlyph(command, offset);
+            } else if (command.type === "style") {
+                styleHandler(styles, command.style);
+            }
+        }
+    }
+
+    let index;
+    
+    while ((index = findNextBreakIndex()) !== undefined) {
+        generateGlyphLine(commands.slice(0, index));
+        commands = commands.slice(index);
+
+        const command = commands[0];
+        if (command.type === "break") {
+            doBreak(command.target);
+            commands.shift();
+        } else {
+            if (command.type === "glyph" && command.char === " ") {
+                commands.shift();
+            }
+            endLine();
+        }
+    }
+
+    generateGlyphLine(commands);
+    endPage();
+
+    return pages;
+}
+
+/**
+ * Find spans of unbreakable commands that are too long to fit within a page 
+ * width and amend those spans so that breaking permitted in all positions. 
+ * @param {*} commands
+ * @param {BlitsyTextRenderOptions} options
+ */
+function commandsBreakLongSpans(commands, options) {
+    const canBreak = (command) => command.type === "break" 
+                               || (command.type === "glyph" && command.breakable); 
+
+    const spans = filterToSpans(commands, canBreak);
+
+    for (const span of spans) {
+        const glyphs = span.filter(command => command.type === "glyph");
+        const charWidths = glyphs.map(command => computeLineWidth(options.font, command.char));
+        const spanWidth = charWidths.reduce((x, y) => x + y, 0);
+
+        if (spanWidth > options.lineWidth) {
+            for (const command of glyphs) command.breakable = true;
+        }
+    }
+}
+
+/**
+ * @param {BlitsyFont} font 
+ * @param {string} line 
+ */
+function computeLineWidth(font, line) {
+    const chars = Array.from(line).map((char) => getFontChar(font, char));
+    const widths = chars.map((char) => char ? char.spacing : 0);
+    return widths.reduce((a, b) => a + b);
+}
+
+/**
+ * Segment the given array into contiguous runs of elements that are not 
+ * considered breakable.
+ */
+function filterToSpans(array, breakable) {
+    const spans = [];
+    let buffer = [];
+
+    array.forEach((element, index) => {
+        if (!breakable(element, index)) {
+            buffer.push(element);
+        } else if (buffer.length > 0) {
+            spans.push(buffer);
+            buffer = [];
+        }
+    });
+
+    if (buffer.length > 0) {
+        spans.push(buffer);
+    }
+
+    return spans;
+}
+
+function find(array, start, step, predicate) {
+    for (let i = start; 0 <= i && i < array.length; i += step) {
+        if (predicate(array[i], i)) return [array[i], i];
+    }
+}
+
+    </script>
+    <script>/**
+ * @typedef {Object} DialoguePage
+ * @property {BlitsyPage} glyphs
+ * @property {Partial<DialogueOptions>} options
+ */
+
+/**
+ * @typedef {Object} DialogueOptions
+ * @property {*} font
+ * @property {number} anchorX
+ * @property {number} anchorY
+ * @property {number} lines
+ * @property {number} lineGap
+ * @property {number} padding
+ * @property {number} glyphRevealDelay
+ * @property {string} backgroundColor
+ * @property {string} panelColor
+ * @property {string} textColor
+ */
+
+const DIALOGUE_DEFAULTS = {
+    anchorX: 0.5,
+    anchorY: 0.5,
+
+    lines: 2,
+    lineGap: 4,
+    padding: 8,
+
+    glyphRevealDelay: .05,
+
+    backgroundColor: undefined,
+    panelColor: "#000000",
+    textColor: "#FFFFFF",
+};
+
+const CONT_ICON_DATA = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAGCAYAAAD68A/GAAAAAXNSR0IArs4c6QAAADNJREFUCJmNzrENACAMA0E/++/8NAhRBEg6yyc5SePUoNqwDICnWP04ww1tWOHfUqqf1UwGcw4T9WFhtgAAAABJRU5ErkJggg==";
+const STOP_ICON_DATA = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAGCAYAAAD68A/GAAAAAXNSR0IArs4c6QAAACJJREFUCJljZICC/////2fAAhgZGRn////PwIRNEhsYCgoBIkQHCf7H+yAAAAAASUVORK5CYII="
+
+class DialoguePlayback extends EventTarget {
+    constructor(width, height) {
+        super();
+        this.dialogueRendering = createRendering2D(width, height);
+
+        /** @type {DialoguePage[]} */
+        this.queuedPages = [];
+        this.pagesSeen = 0;
+        
+        this.options = {};
+
+        // an awaitable that generates a new promise that resolves once no dialogue is active
+        /** @type {PromiseLike<void>} */
+        this.waiter = {
+            then: (resolve, reject) => {
+                if (this.empty) {
+                    resolve();
+                } else {
+                    return wait(this, "empty").then(resolve, reject);
+                }
+            },
+        }
+
+        this.clear();
+    }
+
+    get empty() {
+        return this.currentPage === undefined;
+    }
+
+    async load() {
+        this.contIcon = imageToRendering2D(await loadImage(CONT_ICON_DATA));
+        this.stopIcon = imageToRendering2D(await loadImage(STOP_ICON_DATA));
+    }
+
+    clear() {
+        this.queuedPages = [];
+        this.pagesSeen = 0;
+
+        this.setPage(undefined);
+    }
+
+    /** @param {DialoguePage} page */
+    setPage(page) {
+        const prev = this.currentPage;
+        this.currentPage = page;
+        this.pageTime = 0;
+        this.showGlyphCount = 0;
+        this.showGlyphElapsed = 0;
+        this.pageGlyphCount = page ? page.glyphs.length : 0;
+
+        this.dispatchEvent(new CustomEvent("next-page", { detail: { prev, next: page } }));
+
+        if (page === undefined) {
+            this.dispatchEvent(new CustomEvent("empty"));
+        }
+    }
+
+    /**
+     * @param {string} script 
+     * @param {Partial<DialogueOptions>} options 
+     * @returns {Promise}
+     */
+    async queue(script, options={}) {
+        const { font, lines, lineGap } = this.getOptions(options);
+        const lineWidth = 192;
+
+        script = parseFakedown(script);
+        const glyphPages = scriptToPages(script, { font, lineWidth, lineCount: lines, lineGap });
+        const pages = glyphPages.map((glyphs) => ({ glyphs, options }));
+        this.queuedPages.push(...pages);
+        
+        if (this.empty) this.moveToNextPage();
+    
+        const last = pages[pages.length - 1];
+        return new Promise((resolve) => {
+            const onNextPage = (event) => {
+                const { prev, next } = event.detail;
+                if (prev === last) {
+                    this.removeEventListener("next-page", onNextPage);
+                    resolve();
+                }
+            };
+
+            this.addEventListener("next-page", onNextPage);
+        });
+    }
+
+    /** @param {number} dt */
+    update(dt) {
+        if (this.empty) return;
+
+        this.pageTime += dt;
+        this.showGlyphElapsed += dt;
+
+        this.applyStyle();
+
+        const options = this.getOptions(this.currentPage.options);
+
+        while (this.showGlyphElapsed > options.glyphRevealDelay && this.showGlyphCount < this.pageGlyphCount) {
+            this.showGlyphElapsed -= options.glyphRevealDelay;
+            this.revealNextChar();
+            this.applyStyle();
+        }
+    }
+
+    render() {
+        const options = this.getOptions(this.currentPage.options);
+        const height = options.padding * 2 
+                     + (options.font.lineHeight + options.lineGap) * options.lines;
+        const width = 208;
+
+        fillRendering2D(this.dialogueRendering);
+        fillRendering2D(this.dialogueRendering, options.backgroundColor || "transparent");
+        
+        const { width: displayWidth, height: displayHeight } = this.dialogueRendering.canvas;
+        const spaceX = displayWidth - width;
+        const spaceY = displayHeight - height;
+        const margin = options.noMargin ? 0 : Math.ceil(Math.min(spaceX, spaceY) / 2);
+
+        const minX = margin;
+        const maxX = displayWidth - margin;
+
+        const minY = margin;
+        const maxY = displayHeight - margin;
+
+        const x = Math.floor(minX + (maxX - minX - width ) * options.anchorX);
+        const y = Math.floor(minY + (maxY - minY - height) * options.anchorY);
+
+        this.dialogueRendering.fillStyle = options.panelColor;
+        this.dialogueRendering.fillRect(x, y, width, height);
+        
+        this.applyStyle();
+        const render = renderPage(
+            this.currentPage.glyphs, 
+            width, height, 
+            options.padding, options.padding,
+        );
+        this.dialogueRendering.drawImage(render.canvas, x, y);
+
+        if (this.showGlyphCount === this.pageGlyphCount) {
+            const prompt = this.queuedPages.length > 0 
+                         ? this.contIcon 
+                         : this.stopIcon;
+            this.dialogueRendering.drawImage(
+                recolorMask(prompt, options.textColor).canvas, 
+                x+width-options.padding-prompt.canvas.width, 
+                y+height-options.lineGap-prompt.canvas.height,
+            );
+        }
+    }
+
+    getOptions(options) {
+        return Object.assign({}, DIALOGUE_DEFAULTS, this.options, options);
+    }
+
+    revealNextChar() {
+        if (this.empty) return;
+
+        this.showGlyphCount = Math.min(this.showGlyphCount + 1, this.pageGlyphCount);
+        this.currentPage.glyphs.forEach((glyph, i) => {
+            if (i < this.showGlyphCount) glyph.hidden = false;
+        });
+    }
+
+    revealAll() {
+        if (this.empty) return;
+
+        this.showGlyphCount = this.currentPage.glyphs.length;
+        this.revealNextChar();
+    }
+
+    cancel() {
+        this.queuedPages.length = 0;
+        this.currentPage = undefined;
+    }
+
+    skip() {
+        if (this.empty) return;
+        
+        if (this.showGlyphCount === this.pageGlyphCount) {
+            this.moveToNextPage();
+        } else {
+            this.showGlyphCount = this.pageGlyphCount;
+            this.currentPage.glyphs.forEach((glyph) => glyph.hidden = false);
+        }
+    }
+
+    moveToNextPage() {
+        const nextPage = this.queuedPages.shift();
+        this.pagesSeen += 1;
+        this.setPage(nextPage);
+    }
+
+    applyStyle() {
+        if (this.empty) return;
+
+        const currentGlyph = this.currentPage.glyphs[this.showGlyphCount];
+        const options = this.getOptions(this.currentPage.options);
+
+        if (currentGlyph) {
+            if (currentGlyph.styles.has("delay")) {
+                this.showCharTime = parseFloat(currentGlyph.styles.get("delay"));
+            } else {
+                this.showCharTime = this.currentPage.options.glyphRevealDelay;
+            }
+        }
+
+        this.currentPage.glyphs.forEach((glyph, i) => {
+            glyph.fillStyle = glyph.styles.get("clr") ?? options.textColor;
+
+            if (glyph.styles.has("r"))
+                glyph.hidden = false;
+            if (glyph.styles.has("shk")) 
+                glyph.offset = { x: getRandomInt(-1, 2), y: getRandomInt(-1, 2) };
+            if (glyph.styles.has("wvy"))
+                glyph.offset.y = (Math.sin(i + this.pageTime * 5) * 3) | 0;
+            if (glyph.styles.has("rbw")) {
+                const h = Math.abs(Math.sin(performance.now() / 600 - i / 8));
+                glyph.fillStyle = rgbToHex(HSVToRGB({ h, s: 1, v: 1 }));
+            }
+        });
+    }
+}
+
+/**
+ * @param {EventTarget} target 
+ * @param {string} event 
+ * @returns 
+ */
+ async function wait(target, event) {
+    return new Promise((resolve) => {
+        target.addEventListener(event, resolve, { once: true });
+    });
+}
+
+/**
+ * Return a random integer at least min and below max. Why is that the normal
+ * way to do random ints? I have no idea.
+ * @param {number} min 
+ * @param {number} max 
+ * @returns {number}
+ */
+ function getRandomInt(min, max) {
+    return Math.floor(Math.random() * (max - min)) + min;
+}
+
+function getRandomFloat(min, max) {
+    return Math.random() * (max - min) + min;
+}
+
+
+    </script>
+    <script>const URL_PARAMS = new URLSearchParams(window.location.search);
+const BIPSI_HD = URL_PARAMS.get("hd") === "true" || document.documentElement.dataset.hd;
+let  SAVE_SLOT = URL_PARAMS.get("save") ?? "slot0";
+
+// browser saves will be stored under the id "bipsi"
+let storage = new maker.ProjectStorage(BIPSI_HD ? "bipsi-hd" : "bipsi");
+
+// type definitions for the structure of bipsi project data. useful for the
+// code editor, ignored by the browser 
+/**
+ * @typedef {Object} BipsiDataSettings
+ * @property {string} title
+ */
+
+/**
+ * @typedef {Object} BipsiDataEventField
+ * @property {string} key
+ * @property {string} type
+ * @property {any} data
+ */
+
+/**
+ * @typedef {Object} BipsiDataEvent
+ * @property {number} id
+ * @property {number[]} position
+ * @property {BipsiDataEventField[]} fields
+ */
+
+/**
+ * @typedef {Object} BipsiDataRoom
+ * @property {number} id
+ * @property {number} palette
+ * @property {number[][]} tilemap
+ * @property {number[][]} backmap
+ * @property {number[][]} foremap
+ * @property {number[][]} wallmap
+ * @property {BipsiDataEvent[]} events
+ */
+
+/**
+ * @typedef {Object} BipsiDataTile
+ * @property {number} id
+ * @property {number[]} frames
+ */
+
+/**
+ * @typedef {Object} BipsiDataPalette
+ * @property {number} id 
+ * @property {string[]} colors
+ */
+
+/**
+ * @typedef {Object} BipsiDataProject
+ * @property {BipsiDataRoom[]} rooms
+ * @property {BipsiDataPalette[]} palettes
+ * @property {string} tileset
+ * @property {BipsiDataTile[]} tiles
+ */
+
+/**
+ * @typedef {Object} BipsiDataLocation 
+ * @property {number} room
+ * @property {number[]} position
+ */
+
+/**
+ * Return a list of resource ids that a particular bipsi project depends on. 
+ * @param {BipsiDataProject} data 
+ * @returns {string[]}
+ */
+function getManifest(data) {
+    // all embedded files
+    const files = allEvents(data)
+        .flatMap((event) => event.fields)
+        .filter((field) => field.type === "file")
+        .map((field) => field.data);
+
+    // + tileset
+    return [data.tileset, ...files];
+}
+
+// change these at your own risk
+let TILE_PX = BIPSI_HD ? 16 : 8;
+let ROOM_SIZE = 16;
+let SCREEN_ZOOM = 2;
+
+let ROOM_PX = TILE_PX * ROOM_SIZE;
+let SCREEN_PX = ROOM_PX * SCREEN_ZOOM;
+
+const constants = {
+    frameInterval: 400,
+
+    tileset: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAAjUlEQVR42u3XMQ4AEBAEwPv/p2kUIo5ScmYqQWU3QsSkDbu5TFBHVoDTfqemAFQKfy3BOs7WKBT+HLQCfBB+dgPcHnoKULAIp7ECfFoA30AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOCFDjCu5xlD93/uAAAAAElFTkSuQmCC",
+
+    wallTile: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAMAAAAoLQ9TAAAAAXNSR0IArs4c6QAAAAlQTFRFAAAA////AAAAc8aDcQAAAAN0Uk5TAP//RFDWIQAAADlJREFUGJVlj0EOACAIw2D/f7QmLAa7XeyaKFgVkfSjum1M9xhDeN24+pjdbVYPwSt8lGMDcnV+DjlaUACpjVBfxAAAAABJRU5ErkJggg==",
+    eventTile: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAMAAAAoLQ9TAAAAAXNSR0IArs4c6QAAAAlQTFRFAAAA////AAAAc8aDcQAAAAN0Uk5TAP//RFDWIQAAACVJREFUGJVjYMAATCgAJMCIBCACCHmYAFz3AAugOwzd6eieQwMAdfAA3XvBXggAAAAASUVORK5CYII=",
+    startTile: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAMAAAAoLQ9TAAAAAXNSR0IArs4c6QAAAAZQTFRFAAAA////pdmf3QAAAAJ0Uk5TAP9bkSK1AAAAJUlEQVQYlWNgwACMKAC7ALJqnALIqkEETD8lAhiGEnIHIb+gAQBFEACBGFbz9wAAAABJRU5ErkJggg==",
+    pluginTile: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAQAAAC1+jfqAAAAAXNSR0IArs4c6QAAAFJJREFUKJGVkVEOwCAIQ4vp/a/MPkwUisOtXxBfaQTgIgPg3TvREAaAu1RNG3Ob3QmIUyI8dKxLoABVzK2VCAHqh/9EnNe1gNOqAvB+DnbuT3oAhXsLLn/W2IoAAAAASUVORK5CYII=",
+
+    colorwheelMargin: 12,
+}
+
+const TEMP_ROOM = createRendering2D(ROOM_PX, ROOM_PX);
+const TEMP_SCREEN = createRendering2D(SCREEN_PX, SCREEN_PX);
+
+/**
+ * @param {HTMLCanvasElement} tileset 
+ * @param {number} index 
+ */
+function getTileCoords(tileset, index) {
+    const cols = tileset.width / TILE_PX;
+
+    return {
+        x: TILE_PX * (index % cols),
+        y: TILE_PX * Math.floor(index / cols),
+        size: TILE_PX,
+    }
+}
+
+/**
+ * @param {CanvasRenderingContext2D} tileset 
+ * @param {number} tileIndex 
+ * @param {CanvasRenderingContext2D} destination 
+ * @returns {CanvasRenderingContext2D}
+ */
+function copyTile(tileset, tileIndex, destination = undefined) {
+    const { x, y, size } = getTileCoords(tileset.canvas, tileIndex);
+    const tile = copyRendering2D(tileset, destination, { x, y, w: size, h: size });
+    return tile;
+}
+
+/**
+ * @param {CanvasRenderingContext2D} tileset 
+ * @param {number} tileIndex
+ * @param {CanvasRenderingContext2D} tile 
+ */
+function drawTile(tileset, tileIndex, tile) {
+    const { x, y, size } = getTileCoords(tileset.canvas, tileIndex);
+    tileset.clearRect(x, y, size, size);
+    tileset.drawImage(tile.canvas, x, y);
+}
+
+/**
+ * @param {BipsiDataTile[]} tiles 
+ * @param {number} frame 
+ * @returns {Map<number, number>} 
+ */
+function makeTileToFrameMap(tiles, frame) {
+    /** @type {[number, number][]} */
+    return new Map(tiles.map((tile) => [
+        tile.id, 
+        tile.frames[frame % tile.frames.length],
+    ]));
+}
+
+/**
+ * @param {CanvasRenderingContext2D} destination
+ * @param {CanvasRenderingContext2D} tileset 
+ * @param {Map<number, number>} tileToFrame 
+ * @param {BipsiDataPalette} palette 
+ * @param {{ tilemap: number[][], backmap: number[][], foremap: number[][] }} layer 
+ */
+function drawTilemapLayer(destination, tileset, tileToFrame, palette, { tilemap, backmap, foremap }) {
+    drawRecolorLayer(destination, (backg, color, tiles) => {
+        for (let ty = 0; ty < ROOM_SIZE; ++ty) {
+            for (let tx = 0; tx < ROOM_SIZE; ++tx) {
+                let back = backmap[ty][tx];
+                let fore = foremap[ty][tx];
+                let tileIndex = tilemap[ty][tx];
+                
+                if (tileIndex === 0) {
+                    fore = back;
+                    tileIndex = 1;
+                }
+
+                const frameIndex = tileToFrame.get(tileIndex);
+                const { x, y, size } = getTileCoords(tileset.canvas, frameIndex);
+
+                if (back > 0) {
+                    backg.fillStyle = palette.colors[back];
+                    backg.fillRect(tx * size, ty * size, size, size);
+                }
+
+                if (fore > 0) {
+                    color.fillStyle = palette.colors[fore];
+                    color.fillRect(tx * size, ty * size, size, size);
+                }
+
+                tiles.drawImage(
+                    tileset.canvas,
+                    x, y, size, size, 
+                    tx * size, ty * size, size, size,
+                );
+            }
+        }
+    });
+}
+
+/**
+ * @param {CanvasRenderingContext2D} destination 
+ * @param {CanvasRenderingContext2D} tileset 
+ * @param {Map<number, number>} tileToFrame 
+ * @param {BipsiDataPalette} palette 
+ * @param {BipsiDataEvent[]} events 
+ */
+function drawEventLayer(destination, tileset, tileToFrame, palette, events) {
+    drawRecolorLayer(destination, (backg, color, tiles) => {
+        events.forEach((event) => {
+            const [tx, ty] = event.position;
+            const graphicField = oneField(event, "graphic", "tile");
+            if (graphicField) {
+                let { fg, bg } = FIELD(event, "colors", "colors") ?? { bg: 1, fg: 3 };
+
+                const frameIndex = tileToFrame.get(graphicField.data) ?? 0;
+                const { x, y, size } = getTileCoords(tileset.canvas, frameIndex);
+    
+                if (eventIsTagged(event, "transparent")) {
+                    bg = 0;
+                }
+
+                if (bg > 0) {
+                    backg.fillStyle = palette.colors[bg];
+                    backg.fillRect(tx * size, ty * size, size, size);
+                }
+
+                if (fg > 0) {
+                    color.fillStyle = palette.colors[fg];
+                    color.fillRect(tx * size, ty * size, size, size);
+                }
+
+                tiles.drawImage(
+                    tileset.canvas,
+                    x, y, size, size, 
+                    tx * size, ty * size, size, size,
+                );
+            }
+        });
+    });
+}
+
+/**
+ * @param {CanvasRenderingContext2D} rendering 
+ * @param {BipsiDataPalette} palette 
+ * @param {BipsiDataRoom} room 
+ */
+ function drawRoomThumbnail(rendering, palette, room) {
+    rendering.canvas.width = ROOM_SIZE;
+    rendering.canvas.height = ROOM_SIZE;
+
+    const [, background, foreground, highlight] = palette.colors;
+    for (let y = 0; y < ROOM_SIZE; ++y) {
+        for (let x = 0; x < ROOM_SIZE; ++x) {
+            const foreground = palette.colors[room.foremap[y][x]];
+            const background = palette.colors[room.backmap[y][x]];
+
+            const color = room.wallmap[y][x] === 1 ? foreground : background;
+            rendering.fillStyle = color;
+            rendering.fillRect(x, y, 1, 1);
+        }
+    }
+
+    rendering.fillStyle = highlight;
+    room.events.forEach((event) => {
+        const [x, y] = event.position;
+        rendering.fillRect(x, y, 1, 1);
+    });
+}
+
+/**
+ * @param {CanvasRenderingContext2D} rendering 
+ * @param {BipsiDataPalette} palette
+ */
+function drawPaletteThumbnail(rendering, palette) {
+    for (let y = 0; y < 2; ++y) {
+        for (let x = 0; x < 4; ++x) {
+            rendering.fillStyle = palette.colors[y * 4 + x];
+            rendering.fillRect(x, y, 1, 1);
+        }
+    }
+    rendering.clearRect(0, 0, 1, 1);
+}
+
+
+/**
+ * @param {any[][]} map 
+ * @param {number} dx 
+ * @param {number} dy 
+ */
+function cycleMap(map, dx, dy) {
+    const x = dx > 0 ? dx : ROOM_SIZE + dx;
+    const y = dy > 0 ? dy : ROOM_SIZE + dy;
+    
+    map.push(...map.splice(0, y));
+    map.forEach((row) => {
+        row.push(...row.splice(0, x));
+    });
+}
+
+/**
+ * @param {BipsiDataEvent[]} events 
+ * @param {number} dx
+ * @param {number} dy 
+ */
+function cycleEvents(events, dx, dy) {
+    events.forEach((event) => {
+        event.position[0] = (event.position[0] + ROOM_SIZE + dx) % ROOM_SIZE;
+        event.position[1] = (event.position[1] + ROOM_SIZE + dy) % ROOM_SIZE;
+    });
+}
+
+/**
+ * @param {BipsiDataEvent[]} events 
+ * @param {number} x
+ * @param {number} y 
+ */
+function getEventsAt(events, x, y, ignore=undefined) {
+    return events.filter((event) => event.position[0] === x 
+                                 && event.position[1] === y 
+                                 && event !== ignore);
+}
+
+/**
+ * @template {{id: number}} T
+ * @param {T[]} items 
+ * @param {number} id 
+ * @returns {T}
+ */
+function getById(items, id) {
+    return items.find((item) => item.id === id);
+}
+
+/** 
+ * @param {BipsiDataProject} data 
+ * @param {number} id
+ * @returns {BipsiDataRoom}
+ */
+function getRoomById(data, id) {
+    return getById(data.rooms, id);
+}
+
+/** 
+ * @param {BipsiDataProject} data 
+ * @param {number} id
+ * @returns {BipsiDataPalette}
+ */
+function getPaletteById(data, id) {
+    return getById(data.palettes, id);
+}
+
+/** 
+ * @param {BipsiDataProject} data 
+ * @param {number} id
+ * @returns {BipsiDataEvent}
+ */
+function getEventById(data, id) {
+    return getById(allEvents(data), id);
+}
+
+/** 
+ * @param {BipsiDataProject} data 
+ * @param {number} id
+ * @returns {BipsiDataTile}
+ */
+function getTileById(data, id) {
+    return getById(data.tiles, id);
+}
+
+/**
+ * @param {BipsiDataTile[]} tiles
+ */
+function findFreeFrame(tiles) {
+    const frames = new Set(tiles.flatMap((tile) => tile.frames));
+    const max = Math.max(...frames);
+
+    for (let i = 0; i < max; ++i) {
+        if (!frames.has(i)) return i;
+    }
+
+    return max + 1;
+}
+
+/**
+ * @param {{id: number}[]} items 
+ * @returns {number}
+ */
+function nextId(items) {
+    const max = Math.max(0, ...items.map((item) => item.id ?? 0));
+    return max + 1;
+}
+
+/** @param {BipsiDataProject} data */
+const nextRoomId = (data) => nextId(data.rooms);
+
+/** @param {BipsiDataProject} data */
+const nextTileId = (data) => nextId(data.tiles);
+
+/** @param {BipsiDataProject} data */
+const nextEventId = (data) => nextId(data.rooms.flatMap((room) => room.events));
+
+/** @param {BipsiDataProject} data */
+const nextPaletteId = (data) => nextId(data.palettes);
+
+/**
+ * @param {CanvasRenderingContext2D} tileset 
+ * @param {BipsiDataTile[]} tiles
+ */
+function resizeTileset(tileset, tiles) {
+    const maxFrame = Math.max(...tiles.flatMap((tile) => tile.frames));
+    const cols = 16;
+    const rows = Math.ceil((maxFrame + 1) / cols);
+    resizeRendering2D(tileset, cols * TILE_PX, rows * TILE_PX);
+}
+
+    </script>
+    <script>/**
+ * Use inline style to resize canvas to fit its parent, preserving the aspect
+ * ratio of its internal dimensions.
+ * @param {HTMLCanvasElement} canvas 
+ */
+ function fitCanvasToParent(canvas) {
+    const [tw, th] = [canvas.parentElement.clientWidth, canvas.parentElement.clientHeight];
+    const [sw, sh] = [tw / canvas.width, th / canvas.height];
+    let scale = Math.min(sw, sh);
+    if (canvas.width * scale > 512) scale = Math.floor(scale); 
+
+    canvas.style.setProperty("width", `${canvas.width * scale}px`);
+    canvas.style.setProperty("height", `${canvas.height * scale}px`);
+}
+
+/**
+ * @param {HTMLElement} element 
+ */
+ function scaleElementToParent(element, margin=0) {
+    const parent = element.parentElement;
+
+    const [tw, th] = [parent.clientWidth-margin*2, parent.clientHeight-margin*2];
+    const [sw, sh] = [tw / element.clientWidth, th / element.clientHeight];
+    let scale = Math.min(sw, sh);
+    if (scale > 1) scale = Math.floor(scale); 
+
+    element.style.setProperty("transform", `translate(-50%, -50%) scale(${scale})`);
+
+    return scale;
+}
+
+// async equivalent of Function constructor
+const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor
+
+/**
+ * @param {any} message 
+ * @param {string} origin 
+ */
+function postMessageParent(message, origin) {
+    const target = window.parent ?? window.opener;
+    target?.postMessage(message, origin);
+}
+
+/**
+ * @param {BipsiDataEvent} event 
+ * @param {string} key 
+ */
+function eventIsTagged(event, key) {
+    return oneField(event, key, "tag") !== undefined;
+}
+
+/**
+ * @param {BipsiDataRoom} room
+ * @param {number} x 
+ * @param {number} y 
+ */
+function cellIsSolid(room, x, y) {
+    const wall = room.wallmap[y][x] > 0;
+    const solid = getEventsAt(room.events, x, y).some((event) => eventIsTagged(event, "solid"));
+    return solid || wall;
+}
+
+/**
+ * 
+ * @param {BipsiDataEvent} event 
+ * @param {string} name 
+ * @param {string} type 
+ */
+function allFields(event, name, type=undefined) {
+    return event.fields.filter((field) => field.key === name && field.type === (type ?? field.type));
+}
+
+/**
+ * 
+ * @param {BipsiDataEvent} event 
+ * @param {string} name 
+ * @param {string} type 
+ */
+function oneField(event, name, type=undefined) {
+    return event.fields.find((field) => field.key === name && field.type === (type ?? field.type));
+}
+
+/**
+ * @param {BipsiDataProject} data 
+ */
+function allEvents(data) {
+    return data.rooms.flatMap((room) => room.events);
+}
+
+/**
+ * @param {BipsiDataProject} data 
+ * @param {BipsiDataEvent} event 
+ */
+function roomFromEvent(data, event) {
+    return data.rooms.find((room) => room.events.includes(event));
+}
+
+/**
+ * @param {BipsiDataProject} data 
+ * @param {BipsiDataLocation} location 
+ * @returns {BipsiDataEvent?}
+ */
+function getEventAtLocation(data, location) {
+    const room = findRoomById(data, location.room);
+    
+    const [x, y] = location.position;
+    const [event] = getEventsAt(room.events, x, y);
+    return event;
+} 
+
+/**
+ * @param {BipsiDataProject} data
+ * @param {BipsiDataLocation} location
+ * @returns {BipsiDataEvent[]}
+ */
+function getEventsAtLocation(data, location) {
+    const room = findRoomById(data, location.room);
+
+    const [x, y] = location.position;
+    const events = getEventsAt(room.events, x, y);
+    return events;
+}
+
+/**
+ * @param {BipsiDataProject} data 
+ * @param {BipsiDataEvent} event 
+ * @returns {BipsiDataLocation}
+ */
+function getLocationOfEvent(data, event) {
+    const room = roomFromEvent(data, event);
+    return { room: room.id, position: [...event.position] };
+}
+
+/**
+ * @param {BipsiDataProject} data 
+ * @param {BipsiDataEvent} event 
+ * @param {BipsiDataLocation} location
+ */
+function moveEvent(data, event, location) {
+    const room = findRoomById(data, location.room);
+    
+    if (!room) throw Error("NO ROOM WITH ID " + location.room);
+    
+    removeEvent(data, event);
+    room.events.push(event);
+    event.position = [...location.position];
+}
+
+/**
+ * @param {BipsiDataProject} data 
+ * @param {number} eventId 
+ * @param {BipsiDataLocation} location
+ */
+function moveEventById(data, eventId, location) {
+    const event = findEventById(data, eventId);
+    moveEvent(data, event, location);
+}
+
+/**
+ * @param {BipsiDataProject} data 
+ * @param {BipsiDataEvent} event
+ */
+function removeEvent(data, event) {
+    const prevRoom = roomFromEvent(data, event);
+    arrayDiscard(prevRoom.events, event);
+}
+
+function shuffleArray(array) {
+    for (let i = array.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [array[i], array[j]] = [array[j], array[i]];
+    }
+}
+
+/**
+ * @param {BipsiDataProject} data
+ * @param {number} roomId
+ */
+function findRoomById(data, roomId) {
+    return data.rooms.find((room) => room.id === roomId);
+}
+
+/**
+ * @param {BipsiDataProject} data
+ * @param {number} eventId
+ */
+function findEventById(data, eventId) {
+    return allEvents(data).filter((event) => event.id === eventId)[0];
+}
+
+function findEventsByTag(data, tag) {
+    return allEvents(data).filter((event) => eventIsTagged(event, tag));
+}
+
+function findEventByTag(data, tag) {
+    return allEvents(data).filter((event) => eventIsTagged(event, tag))[0];
+}
+
+/**
+ * @param {BipsiDataEvent} event 
+ */
+function allEventTags(event) {
+    return event.fields.filter((field) => field.type === "tag").map((field) => field.key);
+}
+
+const ERROR_STYLE = {
+    glyphRevealDelay: 0,
+    lines: 8,
+    panelColor: "#FF0000",
+    textColor: "#FFFFFF",
+
+    anchorX: .5, anchorY: .5,
+}
+
+const BEHAVIOUR_BEFORE = `
+let script = $FIELD("before", "javascript");
+if (script) {
+    await RUN_JS(script);
+}
+`;
+
+const BEHAVIOUR_AFTER = `
+let script = $FIELD("after", "javascript");
+if (script) {
+    await RUN_JS(script);
+}
+`;
+
+const BEHAVIOUR_PAGE_COLOR = `
+let color = FIELD(EVENT, "page-color", "text");
+if (color) {
+    SET_CSS("--page-color", color);
+}
+`;
+
+const BEHAVIOUR_IMAGES = `
+let backgrounds = FIELDS_OR_LIBRARY("background");
+if (backgrounds.length > 0) {
+    SHOW_IMAGE("BACKGROUND", backgrounds, 0, 0, 0);
+} else if (IS_TAGGED(EVENT, "clear-background")) {
+    HIDE_IMAGE("BACKGROUND");
+}
+
+let midgrounds = FIELDS_OR_LIBRARY("midground");
+if (midgrounds.length > 0) {
+    SHOW_IMAGE("MIDGROUND", midgrounds, 1, 0, 0);
+} else if (IS_TAGGED(EVENT, "clear-midground")) {
+    HIDE_IMAGE("MIDGROUND");
+}
+
+let foregrounds = FIELDS_OR_LIBRARY("foreground");
+if (foregrounds.length > 0) {
+    SHOW_IMAGE("FOREGROUND", foregrounds, 2, 0, 0);
+} else if (IS_TAGGED(EVENT, "clear-foreground")) {
+    HIDE_IMAGE("FOREGROUND");
+}
+
+let overlays = FIELDS_OR_LIBRARY("overlay");
+if (overlays.length > 0) {
+    SHOW_IMAGE("OVERLAY", overlays, 3, 0, 0);
+} else if (IS_TAGGED(EVENT, "clear-overlay")) {
+    HIDE_IMAGE("OVERLAY");
+}
+`;
+
+const BEHAVIOUR_MUSIC = `
+let music = FIELD_OR_LIBRARY("music");
+
+if (music) {
+    PLAY_MUSIC(music);
+} else if (IS_TAGGED(EVENT, "stop-music")) {
+    STOP_MUSIC();
+}
+`;
+
+const BEHAVIOUR_TITLE = `
+let title = FIELD(EVENT, "title", "dialogue");
+if (title) {
+    await TITLE(title, FIELD(EVENT, "say-style", "json"));
+}
+`;
+
+const BEHAVIOUR_DIALOGUE = `
+let id = FIELD(EVENT, "say-shared-id", "text") ?? "SAY-ITERATORS/" + EVENT_ID(EVENT);
+let mode = FIELD(EVENT, "say-mode", "text") ?? "cycle";
+let say = SAMPLE(id, mode, FIELDS(EVENT, "say", "dialogue"));
+if (say) {
+    await SAY(say, FIELD(EVENT, "say-style", "json"));
+} else if (say === undefined) {
+    let nosays = FIELD(EVENT, "no-says", "javascript");
+    if (nosays) {
+        await RUN_JS(nosays);
+    }
+}
+`;
+
+const BEHAVIOUR_EXIT = `
+let destination = FIELD(EVENT, "exit", "location");
+if (destination) {
+    MOVE(AVATAR, destination);
+}
+`;
+
+const BEHAVIOUR_REMOVE = `
+if (IS_TAGGED(EVENT, "one-time")) {
+    REMOVE(EVENT);
+}
+`;
+
+const BEHAVIOUR_ENDING = `
+let ending = FIELD(EVENT, "ending", "dialogue");
+if (ending !== undefined) {
+    if (ending.length > 0) {
+        await TITLE(ending, FIELD(EVENT, "say-style", "json"));
+    }
+    RESTART();
+}
+`;
+
+const BEHAVIOUR_SET_AVATAR = `
+let graphic = FIELD(EVENT, "set-avatar", "tile");
+if (graphic) {
+    SET_GRAPHIC(AVATAR, graphic);
+}
+`;
+
+const BEHAVIOUR_TOUCH_LOCATION = `
+let location = FIELD(EVENT, "touch-location", "location");
+let events = location ? EVENTS_AT(location) : [];
+for (const event of events) {
+    await TOUCH(event);
+}
+`;
+
+const BEHAVIOUR_ADD_BEHAVIOUR = `
+ADD_BEHAVIOURS(...FIELDS(EVENT, "add-behaviour", "javascript"));
+ADD_BEHAVIOURS(...FIELDS(EVENT, "add-behavior", "javascript"));
+`;
+
+const STANDARD_SCRIPTS = [
+    BEHAVIOUR_PAGE_COLOR,
+    BEHAVIOUR_IMAGES,
+    BEHAVIOUR_MUSIC,
+    BEHAVIOUR_TITLE,
+    BEHAVIOUR_DIALOGUE,
+    BEHAVIOUR_EXIT,
+    BEHAVIOUR_REMOVE,
+    BEHAVIOUR_ENDING, 
+    BEHAVIOUR_SET_AVATAR,
+    BEHAVIOUR_TOUCH_LOCATION,
+    BEHAVIOUR_ADD_BEHAVIOUR,
+];
+
+const BACKG_PAGE = createRendering2D(ROOM_PX, ROOM_PX); 
+const COLOR_PAGE = createRendering2D(ROOM_PX, ROOM_PX);
+const TILES_PAGE = createRendering2D(ROOM_PX, ROOM_PX);
+
+function drawRecolorLayer(destination, render) {
+    fillRendering2D(BACKG_PAGE);
+    fillRendering2D(COLOR_PAGE);
+    fillRendering2D(TILES_PAGE);
+
+    render(BACKG_PAGE, COLOR_PAGE, TILES_PAGE);
+
+    BACKG_PAGE.globalCompositeOperation = "destination-out";
+    BACKG_PAGE.drawImage(TILES_PAGE.canvas, 0, 0);
+    BACKG_PAGE.globalCompositeOperation = "source-over";
+
+    COLOR_PAGE.globalCompositeOperation = "destination-in";
+    COLOR_PAGE.drawImage(TILES_PAGE.canvas, 0, 0);
+    COLOR_PAGE.globalCompositeOperation = "source-over";
+
+    destination.drawImage(BACKG_PAGE.canvas, 0, 0);
+    destination.drawImage(COLOR_PAGE.canvas, 0, 0);
+}
+
+const BACKG_PAGE_D = createRendering2D(555, 555); 
+const COLOR_PAGE_D = createRendering2D(555, 555);
+const TILES_PAGE_D = createRendering2D(555, 555);
+
+function drawRecolorLayerDynamic(destination, render) {
+    const { width, height } = destination.canvas;
+    resizeRendering2D(BACKG_PAGE_D, width, height);
+    resizeRendering2D(COLOR_PAGE_D, width, height);
+    resizeRendering2D(TILES_PAGE_D, width, height);
+
+    fillRendering2D(BACKG_PAGE_D);
+    fillRendering2D(COLOR_PAGE_D);
+    fillRendering2D(TILES_PAGE_D);
+
+    render(BACKG_PAGE_D, COLOR_PAGE_D, TILES_PAGE_D);
+
+    BACKG_PAGE_D.globalCompositeOperation = "destination-out";
+    BACKG_PAGE_D.drawImage(TILES_PAGE_D.canvas, 0, 0);
+    BACKG_PAGE_D.globalCompositeOperation = "source-over";
+
+    COLOR_PAGE_D.globalCompositeOperation = "destination-in";
+    COLOR_PAGE_D.drawImage(TILES_PAGE_D.canvas, 0, 0);
+    COLOR_PAGE_D.globalCompositeOperation = "source-over";
+
+    destination.drawImage(BACKG_PAGE_D.canvas, 0, 0);
+    destination.drawImage(COLOR_PAGE_D.canvas, 0, 0);
+}
+
+class BipsiPlayback extends EventTarget {
+    constructor(font) {
+        super();
+        // home for data of the project we're playing
+        this.stateManager = new maker.StateManager(getManifest);
+        this.stateBackup = new maker.StateManager(getManifest);
+        // final composite of any graphics
+        this.rendering = createRendering2D(256, 256);
+
+        this.font = font;
+        this.dialoguePlayback = new DialoguePlayback(256, 256);
+        this.dialoguePlayback.options.font = font;
+
+        this.time = 0;
+        this.frameCount = 0;
+        this.frameDelay = .400;
+        
+        this.ready = false;
+        this.busy = false;
+        this.error = false;
+
+        this.objectURLs = new Map();
+        this.imageElements = new Map();
+        this.visibleImagesLoadedWaiter = { then: (resolve, reject) => this.visibleImagesLoaded().then(resolve, reject) };
+        this.proceedWaiter = { then: (resolve) => this.addEventListener("proceed", resolve, { once: true }) };
+
+        this.music = document.createElement("audio");
+        this.music.loop = true;
+        this.autoplay = false;
+
+        this.variables = new Map();
+        this.images = new Map();
+        this.extra_behaviours = [];
+    }
+
+    async init() {
+        await this.dialoguePlayback.load();
+    }
+
+    /** @type {BipsiDataProject} */
+    get data() {
+        return this.stateManager.present;
+    }
+
+    async backup() {
+        await this.stateBackup.copyFrom(this.stateManager);
+    }
+
+    /**
+     * @param {maker.StateManager<BipsiDataProject>} stateManager 
+     */
+    async copyFrom(stateManager) {
+        this.clear();
+        await this.stateManager.copyFrom(stateManager);
+        await this.backup();
+    }
+
+    /**
+     * @param {maker.ProjectBundle<BipsiDataProject>} bundle
+     */
+    async loadBundle(bundle) {
+        this.clear();
+        await this.stateManager.loadBundle(bundle);
+        await this.backup();
+    }
+
+    clear() {
+        this.time = 0;
+        this.frameCount = 0;
+        this.frameDelay = .400;
+
+        this.ready = false;
+        this.error = false;
+        this.ended = false;
+        this.dialoguePlayback.clear();
+        this.variables.clear();
+
+        this.music.removeAttribute("src");
+        this.music.pause();
+        this.images.clear();
+        this.extra_behaviours.length = 0;
+        this.imageElements.clear();
+        this.objectURLs.forEach((url) => URL.revokeObjectURL(url));
+        this.objectURLs.clear();
+    }
+
+    getFileObjectURL(id) {
+        const url = this.objectURLs.get(id) 
+                 ?? URL.createObjectURL(this.stateManager.resources.get(id));
+        this.objectURLs.set(id, url);
+        return url;
+    } 
+
+    getFileImageElement(id) {
+        const image = this.imageElements.get(id) ?? loadImageLazy(this.getFileObjectURL(id));
+        this.imageElements.set(id, image);
+        return image;
+    }
+
+    async restart() {
+        this.clear();
+        await this.stateManager.copyFrom(this.stateBackup);
+        this.start();
+    }
+
+    async start() {
+        // player avatar is event tagged "is-player" at the beginning of the game
+        const avatar = findEventByTag(this.data, "is-player");
+        if (avatar === undefined) {
+            this.showError("NO EVENT WITH is-player TAG FOUND");
+            return;
+        }
+
+        // move avatar to last event (render on top)
+        const room = roomFromEvent(this.data, avatar);
+        moveEvent(this.data, avatar, { room: room.id, position: [...avatar.position] });
+
+        this.avatarId = avatar.id;
+        this.libraryId = findEventByTag(this.data, "is-library")?.id;
+        this.ready = true;
+
+        const setup = findEventByTag(this.data, "is-setup");
+        if (setup) await this.touch(setup);
+
+        // game starts by running the touch behaviour of the player avatar
+        await this.touch(avatar);
+    }
+
+    update(dt) {
+        if (!this.ready) return;
+
+        // tile animation
+        this.time += dt;
+        while (this.time >= this.frameDelay) {
+            this.frameCount += 1;
+            this.time -= this.frameDelay;
+        }
+
+        // dialogue animation
+        this.dialoguePlayback.update(dt);
+        
+        // rerender
+        this.render();
+    }
+
+    addRoomToScene(scene, dest, frame) {
+        // find avatar, current room, current palette
+        const avatar = getEventById(this.data, this.avatarId);
+        const room = roomFromEvent(this.data, avatar);
+        const palette = this.getActivePalette();
+        const tileset = this.stateManager.resources.get(this.data.tileset);
+
+        // find current animation frame for each tile
+        const tileToFrame = makeTileToFrameMap(this.data.tiles, frame);
+
+        function upscaler(func) {
+            return () => {
+                fillRendering2D(TEMP_ROOM);
+                func();
+                dest.drawImage(TEMP_ROOM.canvas, 0, 0, 256, 256);
+            };
+        }
+
+        scene.push({ layer: 1, func: upscaler(() => drawTilemapLayer(TEMP_ROOM, tileset, tileToFrame, palette, room)) });
+        scene.push({ layer: 2, func: upscaler(() => drawEventLayer(TEMP_ROOM, tileset, tileToFrame, palette, room.events)) });
+    }
+
+    /**
+     * 
+     * @param {*} scene 
+     * @param {CanvasRenderingContext2D} dest 
+     * @param {number} frame 
+     */
+    addImagesToScene(scene, dest, frame) {
+        // 2x scale for images for non-hd
+        const scale = BIPSI_HD ? 1 : 2;
+
+        function drawImage({ image, x, y }) {
+            const source = image[frame % image.length]
+            dest.drawImage(source, x, y, source.width * scale, source.height * scale);
+        }
+
+        const images = [...this.images.values()];
+        const draws = images.map((image) => ({ layer: image.layer, func: () => drawImage(image) }));
+
+        scene.push(...draws);
+    }
+
+    addDialogueToScene(scene, dest, frame) {
+        if (this.dialoguePlayback.empty)
+            return;
+
+        // change default dialogue position based on avatar position
+        const avatar = getEventById(this.data, this.avatarId);
+        const top = avatar.position[1] >= 8;
+        this.dialoguePlayback.options.anchorY = top ? 0 : 1;
+
+        // redraw dialogue and copy to display area
+        this.dialoguePlayback.render();
+        scene.push({ layer: 3, func: () => dest.drawImage(this.dialoguePlayback.dialogueRendering.canvas, 0, 0) });
+    }
+
+    addLayersToScene(scene, dest, frame) {
+        if (!this.ended) {
+            this.addRoomToScene(scene, dest, frame);
+            this.addDialogueToScene(scene, dest, frame);
+            this.addImagesToScene(scene, dest, frame);
+        }
+    }
+
+    render(frame=undefined) {
+        frame = frame ?? this.frameCount;
+
+        const scene = [];
+        
+        // add visual layers to scene
+        this.addLayersToScene(scene, this.rendering, frame);
+
+        // sort visual layers
+        scene.sort((a, b) => a.layer - b.layer);
+
+        // clear and draw layers
+        fillRendering2D(this.rendering);
+        scene.forEach(({ func }) => func());
+
+        // signal, to anyone listening, that rendering happened
+        this.dispatchEvent(new CustomEvent("render"));
+    }
+
+    end() {
+        this.ended = true;
+    }
+
+    log(...data) {
+        this.dispatchEvent(new CustomEvent("log", { detail: data }));
+        window.parent.postMessage({ type: "log", data });
+    }
+
+    setVariable(key, value) {
+        this.variables.set(key, value);
+        this.sendVariables();
+    }
+
+    sendVariables() {
+        const variables = new Map();
+
+        this.variables.forEach((value, key) => {
+            try {
+                variables.set(key, JSON.parse(JSON.stringify(value)));
+            } catch (e) {
+                variables.set(key, "[COMPLEX VALUE]");
+            }
+        });
+
+        window.parent.postMessage({ type: "variables", data: variables });
+    }
+
+    get canMove() {
+        return this.ready
+            && this.dialoguePlayback.empty
+            && !this.busy
+            && !this.ended;
+    }
+
+    async proceed() {
+        if (!this.ready) return;
+
+        if (this.ended) {
+            this.restart();
+        }
+
+        this.dispatchEvent(new CustomEvent("proceed"));        
+        this.dialoguePlayback.skip();
+
+        if (this.autoplay) {
+            this.music.play();
+            this.autoplay = false;
+        }
+    }
+
+    async say(script, options={}) {
+        this.log(`> SAYING "${script}"`);
+        script = replaceVariables(script, this.variables);
+        await this.dialoguePlayback.queue(script, options);
+    }
+
+    async move(dx, dy) {
+        if (this.ended) this.proceed();
+        if (!this.canMove) return;
+
+        this.busy = true;
+
+        const avatar = getEventById(this.data, this.avatarId);
+        const room = roomFromEvent(this.data, avatar);
+
+        // determine move destination
+        const [px, py] = avatar.position;
+        const [tx, ty] = [px+dx, py+dy];
+
+        // is the movement stopped by the room edge or solid cells?
+        const bounded = tx < 0 || tx >= ROOM_SIZE || ty < 0 || ty >= ROOM_SIZE;
+        const blocked = bounded ? false : cellIsSolid(room, tx, ty);
+
+        // if not, then update avatar position
+        if (!blocked && !bounded) avatar.position = [tx, ty];
+
+        // find if there are events that should be touched. prefer events at
+        // the cell the avatar tried to move into but settle for events at
+        // the cell they're already standing on otherwise
+        const [fx, fy] = avatar.position;
+        const events0 = getEventsAt(room.events, tx, ty, avatar);
+        const events1 = getEventsAt(room.events, fx, fy, avatar);
+        const events = events0.length ? events0 : events1;
+
+        // if there were such events, touch them
+        for (const event of events) {
+            await this.touch(event);
+        }
+
+        this.busy = false;
+    }
+
+
+    eventDebugInfo(event) {
+        const tags = allEventTags(event).join(", ");
+        const info = tags.length > 0 ? `(tags: ${tags}) ` : "";
+        return `${info}@ ${event.position}`;
+    }
+
+    /**
+     * @param {BipsiDataEvent} event 
+     */
+    async touch(event) {
+        this.log(`> TOUCHING EVENT ${this.eventDebugInfo(event)}`);
+    
+        const touch = oneField(event, "touch", "javascript")?.data;
+
+        if (touch !== undefined) {
+            await this.runJS(event, touch);
+        } else {
+            await this.runJS(event, BEHAVIOUR_BEFORE);
+            await standardEventTouch(this, event);
+            await this.runJS(event, BEHAVIOUR_AFTER);
+        }
+    }
+
+    async runJS(event, js) {
+        const defines = this.makeScriptingDefines(event);
+        const names = Object.keys(defines).join(", ");
+        const preamble = `const { ${names} } = this;\n`;
+
+        try {
+            const script = new AsyncFunction("", preamble + js);
+            return await script.call(defines);
+        } catch (e) {
+            const long = `> SCRIPT ERROR "${e}"\n---\n${js}\n---`;
+            this.log(long);
+
+            const error = `SCRIPT ERROR:\n${e}`;
+            this.showError(error);
+        }
+        return undefined;
+    }
+
+    makeScriptingDefines(event) {
+        const defines = bindScriptingDefines(SCRIPTING_FUNCTIONS);
+        addScriptingConstants(defines, this, event);
+        return defines;
+    }
+
+    playMusic(src) {
+        this.music.src = src;
+        this.autoplay = true;
+        this.music.play();
+    }
+
+    stopMusic() {
+        this.music.pause();
+        this.music.removeAttribute("src");
+        this.autoplay = false;
+    }
+
+    setBackground(image) {
+        this.background = image;
+    }
+    
+    async showImage(imageID, fileIDs, layer, x, y) {
+        if (typeof fileIDs === "string") {
+            fileIDs = [fileIDs];
+        }
+
+        if (fileIDs.length === 0) {
+            this.hideImage(imageID);
+        } else {
+            const images = fileIDs.map((fileID) => this.getFileImageElement(fileID));
+            this.images.set(imageID, { image: images, layer, x, y });
+            return Promise.all(images.map(imageLoadWaiter));
+        }
+    }
+
+    hideImage(imageID) {
+        this.images.delete(imageID);
+    }
+
+    async visibleImagesLoaded() {
+        for (const { image } of this.images.values())
+            for (const frame of image)
+                await imageLoadWaiter(frame);
+    }
+
+    showError(text) {
+        this.error = true;
+        this.dialoguePlayback.clear();
+        this.dialoguePlayback.queue(text, ERROR_STYLE);
+        this.dialoguePlayback.skip();
+        this.dialoguePlayback.render();
+        this.rendering.drawImage(this.dialoguePlayback.dialogueRendering.canvas, 0, 0);
+        this.dispatchEvent(new CustomEvent("render"));
+    }
+
+    getActivePalette() {
+        const avatar = getEventById(this.data, this.avatarId);
+        const room = roomFromEvent(this.data, avatar);
+        const palette = getPaletteById(this.data, room.palette);
+        return palette;
+    }
+}
+
+/**
+ * @param {BipsiPlayback} playback 
+ * @param {BipsiDataEvent} event 
+ * @returns {Promise}
+ */
+async function standardEventTouch(playback, event) {
+    for (let script of STANDARD_SCRIPTS) {
+        await playback.runJS(event, script);
+    }
+
+    for (let script of playback.extra_behaviours) {
+        await playback.runJS(event, script);
+    }
+}
+
+function sample(playback, id, type, values) {
+    let iterator = playback.variables.get(id);
+
+    if (!iterator?.next) {
+        iterator = ITERATOR_FUNCS[type](values);
+        playback.variables.set(id, iterator);
+    }
+
+    return iterator.next()?.value;
+}
+
+const ITERATOR_FUNCS = {
+    "shuffle": makeShuffleIterator,
+    "cycle": makeCycleIterator,
+    "sequence": makeSequenceIterator,
+    "sequence-once": makeSequenceOnceIterator,
+}
+
+function* makeShuffleIterator(values) {
+    values = [...values];
+    while (values.length > 0) {
+        shuffleArray(values);
+        for (let value of values) {
+            yield value;
+        }
+    }
+}
+
+function* makeCycleIterator(values) {
+    values = [...values];
+    while (values.length > 0) {
+        for (let value of values) {
+            yield value;
+        }
+    }
+}
+
+function* makeSequenceIterator(values) {
+    values = [...values];
+    for (let value of values) {
+        yield value;
+    }
+    while (values.length > 0) {
+        yield values[values.length - 1];
+    }
+}
+
+function* makeSequenceOnceIterator(values) {
+    values = [...values];
+    for (let value of values) {
+        yield value;
+    }
+}
+
+/**
+ * @param {BipsiPlayback} playback 
+ * @param {BipsiDataEvent} event 
+ * @returns {Promise}
+ */
+async function runEventRemove(playback, event) {
+    if (eventIsTagged(event, "one-time")) {
+        removeEvent(playback.data, event);
+    }
+}
+
+function fakedownToTag(text, fd, tag) {
+    const pattern = new RegExp(`${fd}([^${fd}]+)${fd}`, 'g');
+    return text.replace(pattern, `{+${tag}}$1{-${tag}}`);
+}
+
+function parseFakedown(text) {
+    text = fakedownToTag(text, '##', 'shk');
+    text = fakedownToTag(text, '~~', 'wvy');
+    text = fakedownToTag(text, '==', 'rbw');
+    text = fakedownToTag(text, '__', 'r');
+    return text;
+}
+
+/**
+ * @param {BipsiDataEvent} event 
+ * @param {string} name 
+ * @param {string?} type 
+ */
+function clearFields(event, name, type=undefined) {
+    const fields = allFields(event, name, type);
+    fields.forEach((field) => arrayDiscard(event.fields, field));
+}
+
+/**
+ * @param {BipsiDataEvent} event 
+ * @param {string} name 
+ * @param {string} type 
+ * @param {any[]} values
+ */
+function replaceFields(event, name, type, ...values) {
+    clearFields(event, name, type);
+    values.forEach((value) => {
+        event.fields.push({
+            key: name,
+            type,
+            data: value,
+        });
+    });
+}
+
+function replace(format) {
+    const values = Array.prototype.slice.call(arguments, 1);
+    return format.replace(/\[\s*(\d+)\s*\]/g, (match, index) => values[index] ?? match);
+};
+
+function replaceVariables(text, variables) {
+    return text.replace(/\[\[([^\]]+)\]\]/g, (match, key) => variables.get(key) ?? match);
+}
+
+const WALK_DIRECTIONS = {
+    "L": [-1,  0],
+    "R": [ 1,  0],
+    "U": [ 0, -1],
+    "D": [ 0,  1],
+    "<": [-1,  0],
+    ">": [ 1,  0],
+    "^": [ 0, -1],
+    "v": [ 0,  1],
+}
+
+function bindScriptingDefines(defines) {
+    const bound = {};
+
+    for (const [name, func] of Object.entries(defines)) {
+        bound[name] = func.bind(bound);
+    }
+
+    return bound;
+}
+
+const FIELD = (event, name, type=undefined) => oneField(event, name, type)?.data;
+const FIELDS = (event, name, type=undefined) => allFields(event, name, type).map((field) => field.data);
+const IS_TAGGED = (event, name) => eventIsTagged(event, name);
+
+const SCRIPTING_FUNCTIONS = {
+    SAY(dialogue, options) {
+        return this.PLAYBACK.say(dialogue, options);
+    },
+
+    SAY_FIELD(name, options=undefined, event=this.EVENT) {
+        const text = this.FIELD(event, name, "dialogue") ?? `[FIELD MISSING: ${name}]`;
+        return this.SAY(text, options);
+    },
+
+    TITLE(dialogue, options) {
+        const [, background] = this.PALETTE.colors;
+        options = { anchorY: .5, backgroundColor: background, ...options };
+        return this.PLAYBACK.say(dialogue, options);
+    },
+
+    TOUCH(event) {
+        return this.PLAYBACK.touch(event);
+    },
+
+    EVENT_AT(location) {
+        return getEventAtLocation(this.PLAYBACK.data, location);
+    },
+
+    EVENTS_AT(location) {
+        return getEventsAtLocation(this.PLAYBACK.data, location);
+    },
+
+    LOCATION_OF(event) {
+        return getLocationOfEvent(this.PLAYBACK.data, event);
+    },
+
+    FIND_EVENTS(tag) {
+        return findEventsByTag(this.PLAYBACK.data, tag);
+    },
+
+    FIND_EVENT(tag) {
+        return findEventByTag(this.PLAYBACK.data, tag); 
+    },
+
+    PLAY_MUSIC(file) {
+        this.PLAYBACK.playMusic(this.PLAYBACK.getFileObjectURL(file));
+    },
+    STOP_MUSIC() {
+        this.PLAYBACK.stopMusic();
+    },
+
+    SHOW_IMAGE(id, files, layer, x, y) {
+        return this.PLAYBACK.showImage(id, files, layer, x, y);
+    },
+    HIDE_IMAGE(id) {
+        this.PLAYBACK.hideImage(id);
+    },
+
+    FILE_TEXT(file) { 
+        return this.PLAYBACK.stateManager.resources.get(file).text();
+    },
+
+    FIELD_OR_LIBRARY(field, event=this.EVENT) {
+        let file = FIELD(event, field, "file");
+        let name = FIELD(event, field, "text");
+
+        if (!file && name && this.LIBRARY) {
+            file = FIELD(this.LIBRARY, name, "file");
+        } else if (!file && this.LIBRARY) {
+            file = FIELD(this.LIBRARY, field, "file");
+        }
+
+        return file;
+    },
+
+    FIELDS_OR_LIBRARY(field, event=this.EVENT) {
+        let files = FIELDS(event, field, "file");
+        let names = FIELDS(event, field, "text");
+
+        if (files.length === 0 && names.length > 0 && this.LIBRARY) {
+            files = names.map((name) => FIELD(this.LIBRARY, name, "file"));
+        } else if (files.length === 0 && this.LIBRARY) {
+            files = FIELDS(this.LIBRARY, field, "file");
+        }
+
+        return files;
+    },
+
+    DO_STANDARD() { 
+        return standardEventTouch(this.PLAYBACK, this.EVENT); 
+    },
+
+    MOVE(event, location) {
+        moveEvent(this.PLAYBACK.data, event, location); 
+    },
+
+    FIELD,
+    FIELDS,
+    SET_FIELDS(event, name, type, ...values) {
+        replaceFields(event, name, type, ...values);
+    },
+
+    $FIELD(name, type=undefined, event=this.EVENT) {
+        return this.FIELD(event, name, type);
+    },
+    $FIELDS(name, type=undefined, event=this.EVENT) {
+        return this.FIELDS(event, name, type);
+    },
+    $SET_FIELDS(name, type=undefined, ...values) {
+        return this.SET_FIELDS(this.EVENT, name, type, ...values);
+    },
+    
+    IS_TAGGED,
+    TAG(event, name) {
+        replaceFields(event, name, "tag", true);
+    },
+    UNTAG(event, name) {
+        clearFields(event, name, "tag");
+    },
+
+    $IS_TAGGED(name, event=this.EVENT) {
+        return this.IS_TAGGED(event, name);
+    },
+    $TAG(name, event=this.EVENT) {
+        this.TAG(event, name);
+    },
+    $UNTAG(name, event=this.EVENT) {
+        this.UNTAG(event, name);
+    },
+
+    REMOVE(event=this.EVENT) {
+        removeEvent(this.PLAYBACK.data, event);
+    },
+    $REMOVE(event=this.EVENT) {
+        this.REMOVE(event);
+    },
+
+    SET_GRAPHIC(event, tile) {
+        replaceFields(event, "graphic", "tile", tile);
+    },
+    $SET_GRAPHIC(tile, event=this.EVENT) {
+        this.SET_GRAPHIC(event, tile);
+    },
+
+    async WALK(event, sequence, delay=.4, wait=.4) {
+        const dirs = Array.from(sequence);
+        for (const dir of dirs) {
+            if (dir === ".") {
+                await sleep(wait * 1000);
+            } else {
+                let [x, y] = event.position;
+                const [dx, dy] = WALK_DIRECTIONS[dir];
+                x = Math.max(0, Math.min(ROOM_SIZE - 1, x + dx));
+                y = Math.max(0, Math.min(ROOM_SIZE - 1, y + dy));
+                event.position = [x, y];
+                await sleep(delay * 1000);
+            }
+        }
+    },
+    async $WALK(sequence, delay=.4, wait=.4, event=this.EVENT) {
+        return this.WALK(event, sequence, delay, wait);
+    },
+
+    GET(key, fallback=undefined, target=undefined) {
+        key = target ? `${this.EVENT_ID(target)}/${key}` : key;
+        return this.PLAYBACK.variables.get(key) ?? fallback;
+    },
+    SET(key, value, target=undefined) {
+        key = target ? `${this.EVENT_ID(target)}/${key}` : key;
+        this.PLAYBACK.setVariable(key, value);
+    },
+    $GET(key, fallback=undefined, target=this.EVENT) {
+        return this.GET(key, fallback, target);
+    },
+    $SET(key, value, target=this.EVENT) {
+        this.SET(key, value, target);
+    },
+
+    EVENT_ID(event) { 
+        return event.id; 
+    },
+    TEXT_REPLACE(text, ...values) {
+        return replace(text, ...values);
+    },
+
+    LOG(...data) {
+        this.PLAYBACK.log(...data);
+    },
+    DELAY(seconds) {
+        return sleep(seconds * 1000);
+    },
+
+    RESTART() {
+        this.PLAYBACK.end();
+    },
+
+    SAMPLE(id, type, ...values) {
+        return sample(this.PLAYBACK, id, type, ...values);
+    },
+    SET_CSS(name, value) {
+        ONE(":root").style.setProperty(name, value);
+    },
+
+    RUN_JS(script, event=this.EVENT) {
+        return this.PLAYBACK.runJS(event, script);
+    },
+
+    ADD_BEHAVIOURS(...scripts) {
+        this.PLAYBACK.extra_behaviours.push(...scripts);
+    },
+    POST(message, origin="*") {
+        postMessageParent(message, origin);
+    },
+}
+
+/**
+ * @param {BipsiPlayback} playback 
+ * @param {BipsiDataEvent} event 
+ */
+function addScriptingConstants(defines, playback, event) {
+    // edit here to add new scripting functions
+    defines.PLAYBACK = playback;
+    defines.AVATAR = getEventById(playback.data, playback.avatarId);
+    defines.LIBRARY = getEventById(playback.data, playback.libraryId);
+    defines.EVENT = event;
+    defines.PALETTE = playback.getActivePalette();
+
+    defines.DIALOGUE = playback.dialoguePlayback.waiter;
+    defines.DIALOG = defines.DIALOGUE;
+    defines.INPUT = playback.proceedWaiter;
+    defines.VISIBLE_IMAGES_LOADED = playback.visibleImagesLoadedWaiter;
+
+    // don't use these. retained for backwards compatibility
+    defines.WAIT_INPUT = () => defines.INPUT;
+}
+
+    </script>
+    <script>/**
+ * @param {CanvasRenderingContext2D} destination 
+ * @param {CanvasRenderingContext2D} tileset 
+ * @param {Map<number, number>} tileToFrame 
+ * @param {BipsiDataPalette} palette 
+ * @param {BipsiDataRoom} room
+ */
+ function drawRoomPreview(destination, tileset, tileToFrame, palette, room) {
+    const [background] = palette.colors;
+
+    fillRendering2D(destination, background);
+    drawTilemapLayer(destination, tileset, tileToFrame, palette, room);
+    drawEventLayer(destination, tileset, tileToFrame, palette, room.events);
+
+    room.events.forEach((event) => {
+        const [x, y] = event.position;
+
+        destination.fillStyle = "white";
+        destination.globalAlpha = .5;
+        destination.fillRect(
+            x * TILE_PX + 1, 
+            y * TILE_PX + 1, 
+            TILE_PX - 2, 
+            TILE_PX - 2,
+        );
+    });
+    destination.globalAlpha = 1;
+}
+
+/**
+ * @param {CanvasRenderingContext2D} destination 
+ * @param {BipsiPlayback} playback 
+ * @param {number} roomId 
+ */
+function drawRoomPreviewPlayback(destination, playback, roomId) {
+    const tileset = playback.stateManager.resources.get(playback.data.tileset);
+    const room = getRoomById(playback.data, roomId);
+    const palette = getPaletteById(playback.data, room.palette);
+    const tileToFrame = makeTileToFrameMap(playback.data.tiles, 0);
+    drawRoomPreview(destination, tileset, tileToFrame, palette, room);
+}
+
+/**
+ * @param {CanvasRenderingContext2D} destination 
+ * @param {BipsiPlayback} playback 
+ * @param {number} roomId 
+ */
+ function drawRoomThumbPlayback(destination, playback, roomId) {
+    const room = getRoomById(playback.data, roomId);
+    const palette = getPaletteById(playback.data, room.palette);
+    drawRoomThumbnail(destination, palette, room);
+}
+
+async function generateRoomPreviewURL(destination, playback, roomId) {
+    drawRoomPreviewPlayback(destination, playback, roomId);
+    URL.createObjectURL(await canvasToBlob(destination.canvas));
+}
+
+/**
+ * @param {BipsiPlayback} playback
+ * @returns {Promise<[string, number][]>}
+ */
+async function recordFrames(playback) {
+    const frames = [];
+    const temp = createRendering2D(512, 512);
+
+    await playback.render(0);
+    temp.drawImage(playback.rendering.canvas, 0, 0, 512, 512);
+    frames.push([temp.canvas.toDataURL(), Math.floor(playback.frameDelay * 1000)]);
+    await playback.render(1);
+    temp.drawImage(playback.rendering.canvas, 0, 0, 512, 512);
+    frames.push([temp.canvas.toDataURL(), Math.floor(playback.frameDelay * 1000)]);
+
+    return frames;
+}
+
+    </script>
+    <script>async function preload() {
+    const canvas = ONE("#player-canvas");
+    const rendering = canvas.getContext("2d");
+    rendering.drawImage(ONE("#loading-splash"), 0, 0);
+    scaleElementToParent(canvas.parentElement);
+}
+
+    </script>
+    
+    
+    
+    
+    
+    
+    <script>async function startEditor(font) {
+    const editor = new BipsiEditor(font);
+    await editor.init();
+
+    // used to show/hide elements in css
+    document.documentElement.setAttribute("data-app-mode", "editor");
+
+    // no embedded project, start editor with save or editor embed
+    const save = await storage.load(SAVE_SLOT).catch(() => undefined);
+    const fallback = BIPSI_HD ? makeBlankBundle() :  maker.bundleFromHTML(document, "#editor-embed");
+    const bundle = save || fallback;
+    
+    // load bundle and enter editor mode
+    await editor.loadBundle(bundle);
+
+    // Auto-select the pointed-to event (upper-left corner)
+    editor.selectPointedEvent();
+
+    // unsaved changes warning
+    window.addEventListener("beforeunload", (event) => {
+        if (!editor.unsavedChanges) return;
+        event.preventDefault();
+        return event.returnValue = "Are you sure you want to exit?";
+    });
+
+    return editor;
+}
+
+async function makePlayback(font, bundle) {
+    const playback = new BipsiPlayback(font);
+    await playback.init();
+
+    const playCanvas = /** @type {HTMLCanvasElement} */ (ONE("#player-canvas"));
+    const playRendering = /** @type {CanvasRenderingContext2D} */ (playCanvas.getContext("2d"));
+
+    // need to override touch events for mobile
+    document.body.style.touchAction = "none";
+
+    // update the canvas size every render just in case..
+    playback.addEventListener("render", () => {
+        fillRendering2D(playRendering);
+        playRendering.drawImage(playback.rendering.canvas, 0, 0);
+        
+        scaleElementToParent(playCanvas.parentElement);
+
+        document.documentElement.style.setProperty('--vh', `${window.innerHeight / 100}px`);
+    });
+
+    // update the canvas size whenever the browser window resizes
+    window.addEventListener("resize", () => scaleElementToParent(playCanvas.parentElement));
+    
+    // update the canvas size initially
+    scaleElementToParent(playCanvas.parentElement);
+
+    let moveCooldown = 0;
+    const heldKeys = new Set();
+    const keys = new Map();
+    keys.set("ArrowLeft",  () => playback.move(-1,  0));
+    keys.set("ArrowRight", () => playback.move( 1,  0));
+    keys.set("ArrowUp",    () => playback.move( 0, -1));
+    keys.set("ArrowDown",  () => playback.move( 0,  1));
+
+    const keyToCode = new Map();
+    keyToCode.set("ArrowUp", "KeyW");
+    keyToCode.set("ArrowLeft", "KeyA");
+    keyToCode.set("ArrowDown", "KeyS");
+    keyToCode.set("ArrowRight", "KeyD");
+
+    function doMove(key) {
+        const move = keys.get(key);
+        if (move) {
+            move();
+            moveCooldown = .2;
+        }
+    }
+
+    let prev;
+    const timer = (next) => {
+        prev = prev ?? Date.now();
+        next = next ?? Date.now();
+        const dt = Math.max(0, (next - prev) / 1000.);
+        moveCooldown = Math.max(moveCooldown - dt, 0);
+        prev = next;
+        window.requestAnimationFrame(timer);
+
+        if (moveCooldown === 0) {
+            const key = Array.from(keys.keys()).find((key) => heldKeys.has(key) || heldKeys.has(keyToCode.get(key)));
+            if (key) doMove(key);
+        }
+
+        playback.update(dt);
+    }
+    timer();
+
+    function down(key, code) {
+        if (!playback.canMove) {
+            playback.proceed();
+        } else {
+            heldKeys.add(key);
+            heldKeys.add(code);
+            doMove(key);
+        }
+    }
+
+    function up(key, code) {
+        heldKeys.delete(key);
+        heldKeys.delete(code);
+    }
+
+    const turnToKey = ["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp"];
+    let ignoreMouse = false;
+
+    window.onblur = () => setTimeout(() => ignoreMouse = true, 0);
+    window.onfocus = () => setTimeout(() => ignoreMouse = false, 0);
+
+    document.addEventListener("keydown", (event) => {
+        if (!event.repeat) down(event.key, event.code);
+        if (keys.has(event.key)) {
+            event.stopPropagation();
+            event.preventDefault();
+        }
+    }, { capture: true });
+    document.addEventListener("keyup", (event) => up(event.key, event.code));
+
+    document.addEventListener("pointerdown", (event) => {
+        if (ignoreMouse) return;
+
+        const threshold = playCanvas.getBoundingClientRect().width / ROOM_SIZE * 2;
+
+        const drag = ui.drag(event);
+        let [x0, y0] = [drag.downEvent.clientX, drag.downEvent.clientY];
+
+        playback.proceed();
+
+        drag.addEventListener("move", () => {
+            const [x1, y1] = [drag.lastEvent.clientX, drag.lastEvent.clientY];
+            const [dx, dy] = [x1 - x0, y1 - y0];
+
+            const dist = Math.max(Math.abs(dx), Math.abs(dy));
+            const angle = Math.atan2(dy, dx) + Math.PI * 2;
+            const turns = Math.round(angle / (Math.PI * .5)) % 4;
+            const nextKey = turnToKey[turns];
+
+            if (dist >= threshold) {
+                doMove(nextKey);
+                x0 = x1;
+                y0 = y1;
+            } 
+        });
+    });
+
+    async function captureGif() {
+        const giffer = window.open(
+            "https://kool.tools/tools/gif/",
+            "gif maker",
+            "left=10,top=10,width=512,height=512,resizable=no,location=no",
+        );
+        const frames = await recordFrames(playback);
+        sleep(500).then(() => giffer.postMessage({ name: "bipsi", frames }, "https://kool.tools"));
+    }
+
+    function getRoomListing() {
+        const current = getLocationOfEvent(playback.data, getEventById(playback.data, playback.avatarId));
+        const rooms = [];
+        const thumb = createRendering2D(ROOM_SIZE, ROOM_SIZE);
+        const preview = createRendering2D(ROOM_PX, ROOM_PX);
+        playback.data.rooms.forEach((room) => {
+            drawRoomPreviewPlayback(preview, playback, room.id);
+            drawRoomThumbPlayback(thumb, playback, room.id);
+            rooms.push({ id: room.id, thumb: thumb.canvas.toDataURL(), preview: preview.canvas.toDataURL() });
+        });
+        postMessageParent({ type: "room-listing", rooms, current }, "*");
+    }
+
+    /** @type {Map<string, (any) => void>} */
+    const debugHandlers = new Map();
+
+    debugHandlers.set("move-to", (message) => moveEventById(playback.data, playback.avatarId, message.destination));
+    debugHandlers.set("key-down", (message) => down(message.key, message.code));
+    debugHandlers.set("key-up", (message) => up(message.key, message.code));
+    debugHandlers.set("capture-gif", (message) => captureGif());
+    debugHandlers.set("get-room-listing", (message) => getRoomListing());
+
+    debugHandlers.set("touch-location", (message) => playback.touch(getEventAtLocation(playback.data, message.location)));
+    debugHandlers.set("touch-tagged", (message) => playback.touch(findEventByTag(playback.data, message.tag)));
+
+    // only allow these when playtesting from editor
+    if (document.documentElement.getAttribute("data-debug")) {
+        // if the game runs javascript from variables then this would be a 
+        // vector to run arbitrary javascript on the game's origin giving
+        // read/write access to storage for that origin and the power to e.g
+        // erase all game saves etc
+        debugHandlers.set("set-variable", (message) => playback.setVariable(message.key, message.value));
+    }
+
+    window.addEventListener("message", (event) => {
+        debugHandlers.get(event.data.type)?.call(this, event.data);
+    });
+
+    document.documentElement.setAttribute("data-app-mode", "player");
+    await playback.loadBundle(bundle);
+    playback.start();
+
+    return playback;
+}
+
+let PLAYBACK;
+let EDITOR;
+
+async function start() {
+    const font = await loadBipsiFont(JSON.parse(ONE("#font-embed").textContent));
+
+    if (BIPSI_HD) document.documentElement.dataset.hd = "true";
+
+    // determine if there is a project bundle embedded in this page
+    const bundle = maker.bundleFromHTML(document);
+
+    if (bundle) {
+        PLAYBACK = await makePlayback(font, bundle);
+        window.PLAYBACK = PLAYBACK;
+    } else {
+        EDITOR = await startEditor(font);
+        window.EDITOR = EDITOR;
+
+        // Run EDITOR code for all plugins
+        const editorCode = EDITOR.gatherPluginsJavascript([ "EDITOR" ]);
+        (new Function(editorCode))();
+    }
+}
+
+    </script>
+    <!-- styles-->
+    <style>
+/* prevent weird touch highlights https://stackoverflow.com/questions/21003535/ */
+.no-select {
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    -khtml-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+}
+
+/* hidden elements should be hidden regardless of their display style */
+[hidden] { display: none !important; }
+
+/* default to width/height including padding and border */
+* { box-sizing: border-box; }
+
+/* used dynamically to prevent or cancel smooth transitions */
+.skip-transition { transition: none !important; }
+
+/* make buttons and select inherit font */ 
+button, select { font-family: inherit; font-size: inherit; }
+
+/* clickable things should use this cursor imo */
+button, a, input[type="radio"], input[type="checkbox"], select, option, label, summary { cursor: pointer; }
+
+/* crisp pixelart for images and backgrounds */
+* {
+    image-rendering: -moz-crisp-edges;
+    image-rendering: -webkit-crisp-edges;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+}
+
+/* prevent pull down to refresh page (and lose data rip) */
+body {
+    overscroll-behavior-y: contain;
+}
+
+html, body {
+    margin: 0; padding: 0;
+    width: 100%;
+    min-height: calc(var(--vh, 1vh) * 100);
+
+    overflow: hidden auto;
+    overscroll-behavior-y: contain;
+}
+
+body {
+    display: flex; flex-direction: column;
+    justify-content: center;
+    align-items: center;
+
+    color: white;
+}
+
+    </style>
+    <style>body {    
+    background: var(--page-color, black);
+}
+
+#player {
+    width: 256px;
+    height: 256px;
+
+    position: absolute;
+    left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+
+    overflow: hidden;
+}
+
+    </style>
+    
+  </head>
+  <body class="no-select" onload="start()">
+    <div id="player">
+      <canvas id="player-canvas" width="256" height="256"></canvas>
+    </div>
+    <img id="loading-splash" hidden="hidden" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAAEABAMAAACuXLVVAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAGUExURQAAAP/YAFIewjUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAACXSURBVHja7dJBCgMhDEDReIN4/8sOkba4mEULogN9DxcusvhEAwAAAAAAAAAAAAAAAABmfRMBAgQ8PCA/czndDwX0QwHRxonaQdT85oCx+szXra1/iW8CIs4G5LSBeoJ6iHF2BLw/QP2BVgG1kI0BN/Otr/VrwHICBAgQIECAAAECBAh4bgAAAAAAAAAAAAAAAAAAfyjiAkM9EgGHYOwCAAAAAElFTkSuQmCC">
+    <script id="plugins"></script>
+    <script>preload();</script>
+    <script id="bundle-embed" type="application/json">{"project":{"rooms":[{"id":0,"palette":0,"tilemap":[[0,13,12,7,11,19,7,7,7,0,0,0,0,0,0,0],[7,0,0,0,17,0,15,16,0,7,0,0,0,0,0,0],[10,0,0,0,0,0,0,0,0,7,0,0,0,0,0,0],[7,0,0,0,0,0,0,0,18,7,0,0,0,0,0,0],[7,0,7,0,0,0,0,0,18,7,0,0,0,0,0,0],[7,8,7,0,0,0,0,0,0,7,0,0,0,0,0,0],[7,9,7,0,0,0,0,0,0,7,0,0,0,0,0,0],[7,9,14,0,0,0,0,0,0,0,0,0,0,0,0,0],[7,9,7,0,7,7,7,7,7,7,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"wallmap":[[0,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0],[1,0,0,0,1,0,1,1,0,1,0,0,0,0,0,0],[1,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0],[1,0,0,0,0,0,0,0,1,1,0,0,0,0,0,0],[1,0,1,0,0,0,0,0,1,1,0,0,0,0,0,0],[1,1,1,0,0,0,0,0,0,1,0,0,0,0,0,0],[1,0,1,0,0,0,0,0,0,1,0,0,0,0,0,0],[1,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0],[1,0,1,0,1,1,1,1,1,1,0,0,0,0,0,0],[0,0,0,1,1,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"events":[{"id":8,"position":[3,8],"fields":[{"key":"is-player","type":"tag","data":true},{"key":"graphic","type":"tile","data":6},{"key":"colors","type":"colors","data":{"fg":2,"bg":0}},{"key":"page-color","type":"text","data":"black"},{"key":"title","type":"dialogue","data":"wandering out of your room, you look for some matches..."}]},{"id":9,"position":[3,7],"fields":[{"key":"say","type":"dialogue","data":"the kitchen feels lonely,\n\nwithout the green-glow of the landline phone"},{"key":"one-time","type":"tag","data":true}]},{"id":10,"position":[0,2],"fields":[{"key":"say","type":"dialogue","data":"looking into the backyard, you only see darkness"},{"key":"one-time","type":"tag","data":true}]},{"id":11,"position":[9,7],"fields":[{"key":"say","type":"dialogue","data":"you don't want to go to the dining room right now"},{"key":"one-time","type":"tag","data":true}]},{"id":12,"position":[8,3],"fields":[{"key":"one-time","type":"tag","data":true}]},{"id":13,"position":[4,1],"fields":[{"key":"ending","type":"dialogue","data":"scrambling under the sink,\nyou finally find an old lighter"},{"key":"after","type":"javascript","data":"document.querySelector('html').classList.add('game-complete')"}]},{"id":14,"position":[1,4],"fields":[{"key":"say","type":"dialogue","data":"the basement would be scary to be in right now"},{"key":"one-time","type":"tag","data":true}]}],"backmap":[[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]],"foremap":[[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],[2,2,2,3,2,2,2,2,2,2,2,2,2,2,2,2],[2,4,2,2,2,2,2,2,2,2,2,2,2,2,2,2],[2,5,2,2,2,2,2,2,2,2,2,2,2,2,2,2],[2,3,2,2,2,2,2,2,2,2,2,2,2,2,2,2],[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2]]}],"palettes":[{"id":0,"colors":["#000000","#000000","#ffffff","#b5b5b5","#eaeaea","#cecece","#5e5e5e","#d9529c"]}],"tileset":"175","tiles":[{"id":6,"frames":[0]},{"id":10,"frames":[4]},{"id":11,"frames":[5,16]},{"id":19,"frames":[14,15]},{"id":18,"frames":[12]},{"id":12,"frames":[6]},{"id":13,"frames":[7]},{"id":14,"frames":[8]},{"id":7,"frames":[1]},{"id":15,"frames":[9]},{"id":16,"frames":[10]},{"id":17,"frames":[11,13]},{"id":8,"frames":[2]},{"id":9,"frames":[3]}]},"resources":{"175":{"type":"canvas-datauri","data":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAAAQCAYAAADeWHeIAAABZ0lEQVRoQ+1X0Q6DMAic///Rm5qxXBkUKNXEUJ+coy0cx0G3Fzzv/Tl+bvtDn+kb2l35jmcf59x9/uzYKB4JW0982fVWPL9EozMRAvCEWQfy/3mCo/vhemntDAJFfcLiwQQe74c/HF9tf7Sld74+ije3TxMg68CfQ6A+nr05AThQEQJo6mNVIVdLnnSJ9JYNFaRklyUBrlelngetJWO0OrQWE91vpgJcQQBqqVo185ZrtWQkxggROF4nAbQqIcnyVOIsmwwBMj5IUk37RX2Kzk+9FmDFNOJbowAomXiYN/kjDkgsHwXbK/HWfNAbPjMtwEogKgRXA09sWfybFqD1G08Qs2yiAXlA4jKskd5qc9ok35sBPLjcrQBNoaPzIwSIJkwaiLjy9BTCA6hkgxN4lACjZz5h3Xkt6TmaTfATQKjsY3MNrAxE1dgXAapm/hv3IsAiQHEEioe/FGARoDgCxcNf18DiBPgAe/NwGAlXc0sAAAAASUVORK5CYII="}}}</script>
+    
+    <script id="font-embed" type="text">{"name":"ibm437-small","charWidth":6,"charHeight":8,"runs":[[0],[9786,9787],[9829,9830],[9827],[9824],[8226],[9688],[9675],[9689],[9794],[9792],[9834,9835],[9788],[9658],[9668],[8597],[8252],[182],[167],[9644],[8616],[8593],[8595],[8594],[8592],[8735],[8596],[9650],[9660],[32,126],[8962],[199],[252],[233],[226],[228],[224],[229],[231],[234],[235],[232],[239],[238],[236],[196,197],[201],[230],[198],[244],[246],[242],[251],[249],[255],[214],[220],[162,163],[165],[8359],[402],[225],[237],[243],[250],[241],[209],[170],[186],[191],[8976],[172],[189],[188],[161],[171],[187],[9617,9619],[9474],[9508],[9569,9570],[9558],[9557],[9571],[9553],[9559],[9565],[9564],[9563],[9488],[9492],[9524],[9516],[9500],[9472],[9532],[9566,9567],[9562],[9556],[9577],[9574],[9568],[9552],[9580],[9575,9576],[9572,9573],[9561],[9560],[9554,9555],[9579],[9578],[9496],[9484],[9608],[9604],[9612],[9616],[9600],[945],[223],[915],[960],[931],[963],[181],[964],[934],[920],[937],[948],[8734],[966],[949],[8745],[8801],[177],[8805],[8804],[8992],[8993],[247],[8776],[176],[8729],[183],[8730],[8319],[178],[9632],[160]],"atlas":"data:image/webp;base64,UklGRloFAABXRUJQVlA4WAoAAAAYAAAAXwAAfwAAVlA4TF4EAAAvX8AfEA8w//M///Mf8KD9bL/iNh7hN8fT+sSytlOr3FH2eGwlU7dSnGWwEpdtL7nq3V4xkye5XJqOApMpW8vr0GyZ6YrD5S7jVdleTLlhS8eTUkT/Hbht40g0oL3e7xM4LICg8pJLJi49txj13DmlZ5O+dWDCYeHQ5A4lUa3nBuWzD+7+eZfc8aceGsj0cgk6l6faXIlDkxOZlzfjsB8dQuWlB80X4VzlJRcAsSYZcTNKAL3P27NoE03JBkNtn5xdHHL1VRjl6Nb21ydnjWH07KDxncajju0zV5aTCwFvj7Ahp9F6xok1STXrpwQVcC4F515y1cTDVHB4fXFmY1ic4wd0lPaTNZLYwUVBkt45EM8O6uMYJ7USRySgb8UsgV/sbaM85glCBXjbcIuJgNyhrVrZL7shRVNKwPoyqtsUVDcfIManLGofCdeMWxIytHTWL38XJnipZI5eofoUChF+RTFXcV1hcyXkbLV0eLzcGZaiDKMmATxaU2+14rYMtcpWLZuZCkkY71p7VY/NqEJCxiZrU67Izv5VQaYZ6tK9ZTymooQM1TJUyyHBZXJaU9kl5XDDQbUKt1xxVjuoWnZOQz1s1TI5Op7ME2zVY6qbPjUlMUiachpH50tUhBFawk1QJIkLWmZso6JITASZWUXrk8pZDW7cckNeBqYLhBRRoCAKAkoBmtUiCy/dZ8TNCykU3niDj8wwQw0o89gLTR+Zyuk80UuFqA3o5RfrvpL4l6o26nfVhlvuBTrXD0AEAImuSRVv15qCVvr8eCr+bsc8NZw4lXpNO5aqCW5a1iVRkdM/XdDvK+X6intTtDbpO/sidYFQANAFUCAjVk/oFOTuJJ2tKQCiGoAJSBpdmny4QT7sh5EyggajHltV6Jw/7POXI98tbcr6qWJlSkxbrTIYo2cHaTdPQD784pQSywsAYTgWbqv+tH3qp/OEL9+IogUA4GLBtS0H14e9gXg6qIk2I38/lQ5yRU3va03bY06iHTDsWHrNm5mgtqbMX7H9Qe/cRbSTPaHMgGNjAUCaUvfihO5yCkoIAFgkAcR8gNwRQ9tTZn6mZ06CKfEVwcQyVD2krI4o8XT3gwas0MKEoryZHgsb0cfciPQk010fyDjNCG69Tc/7aQt0G5aB6PUA950dWXoFn21SzDWgNjMdWbkn8p0967urEX6xuUY1bRVgPOa3oxQubrlVboESBkP1tMDT4jRz76H8wKG8MwZAgL78ufzKfw6O9PJAL0QnhdvcGx6ozj9IeypybJzDpTznTFu+IJ8fBJB3gA1g6FYu5W+hLX8r+dHuPy1MAGRXGEBzoB+A2VWEjvLmYFIuW5QJ+iaUxpoDyZbgDLtU2fR3nGd/0J+Zp20KxTjlHDPnxSccjvMzEcbklx8EQTMAhlFjwJyPvisXPxVixR0A+ZADGYJ7uLKjEF8h8mPKx1z6XBzslRIHX3i42F3T6jAt/BROj2HthYsnXBKAoUo47tbmAkVYSUbWAAAASUkqAAgAAAAGABIBAwABAAAAAQAAABoBBQABAAAAVgAAABsBBQABAAAAXgAAACgBAwABAAAAAgAAADEBAgAQAAAAZgAAAGmHBAABAAAAdgAAAAAAAABgAAAAAQAAAGAAAAABAAAAcGFpbnQubmV0IDUuMC42AAUAAJAHAAQAAAAwMjMwAaADAAEAAAABAAAAAqAEAAEAAABgAAAAA6AEAAEAAACAAAAABaAEAAEAAAC4AAAAAAAAAAIAAQACAAQAAABSOTgAAgAHAAQAAAAwMTAwAAAAAA=="}</script>
+  
+</body></html>

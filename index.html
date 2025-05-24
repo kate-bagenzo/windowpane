@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <link rel="preload" href="/engine/styles/reset.scss" as="style" />
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/icon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>windowpane</title>
+    <link rel="stylesheet" href="/engine/styles/reset.scss" type="text/css" />
+    <link rel="stylesheet" href="/engine/styles/base.scss" type="text/css" />
+    <link rel="stylesheet" href="/story/styles.scss" type="text/css" />
+  </head>
+  <body>
+    <noscript>scripts are required</noscript>
+    
+    <main id="app">
+      <article id="viewer">
+        <span id="shortcuts"></span>
+        <img id="screen" src="">
+      </article>
+
+      
+    </main>
+    
+    <aside id="wp-infobar" class="isHidden">
+      <span><i data-lucide="book-open"></i></span>
+      <h1></h1>
+      /
+      <span><i data-lucide="meh"></i></span>
+      <h2></h2>
+      /
+      <span><i data-lucide="move"></i></span>
+      <h3> arrows,</h3>
+      <span><i data-lucide="space"></i></span>
+      <h3> space, or</h3>
+      <span><i data-lucide="mouse"></i></span>
+      <h3> click</h3>
+      /
+      <span><i data-lucide="info"></i></span>
+      <button id="wp-help-button">(h)elp</button>
+    </aside>
+    
+    <aside id="wp-bookmark" class="isHidden">
+      <i data-lucide="bookmark"></i><p></p>
+    </aside>
+
+    <aside id="wp-volume" class="isHidden">
+      <i data-lucide="volume-2"></i><p></p>
+    </aside>
+    
+    <aside id="wp-skip-page" class="isHidden">
+      <h1><span><i data-lucide="redo"></i></span>skip page</h1>
+      <h2>type page # then hit enter</h2>
+      <input type="text" inputmode="numeric" id="wp-skip-page-input"></input>
+      <span>
+        <i data-lucide="library"></i>
+        <p id="wp-skip-page-numbers"></p>
+      </span>
+      <span>
+        <i data-lucide="milestone"></i>
+        <p id="wp-skip-page-current"></p>
+      </span>
+      <span>
+        <i data-lucide="book-marked"></i>
+        <p id="wp-skip-page-bookmark"></p>
+      </span>
+    </aside>
+
+    <aside id="wp-help" class="isHidden">
+      <h2><span><i data-lucide="info"></i></span>help</h2>
+      <h3><span><i data-lucide="navigation"></i></span>navigation</h3>
+      <ul>
+        <li><h4><i data-lucide="chevron-right"></i>next page</h4>right arrow / click / space</li>
+        <li class="rollbackHelp"><h4><i data-lucide="chevron-left"></i>previous page</h4>left arrow / click</li>
+        <li><h4><i data-lucide="chevrons-up-down"></i>scroll</h4>up/down arrows / space / shift+space</li>
+      </ul>
+      <h3 class="rollbackHelp"><span><i data-lucide="redo"></i></span>history</h3>
+      <ul class="rollbackHelp">
+        <li><h4><i data-lucide="skip-forward"></i>open skip menu</h4>number key (1-9)</li>
+        <li><h4><i data-lucide="sticky-note"></i>skip to page</h4>enter</li>
+        <li><h4><i data-lucide="bookmark-plus"></i>set/remove bookmark</h4>'b' key</li>
+        <li><h4><i data-lucide="bookmark-check"></i>load bookmark</h4>'l' key</li>
+      </ul>
+      <h3 class="rollbackHelp"><span><i data-lucide="audio-lines"></i></span>sound</h3>
+      <ul class="rollbackHelp">
+        <li><h4><i data-lucide="volume-1"></i>lower volume</h4>shift + left arrow</li>
+        <li><h4><i data-lucide="volume-2"></i>raise volume</h4>shift + right arrow</li>
+      </ul>
+    </aside>
+
+    <aside id="wp-startbutton" class="isHidden">
+      <button>
+          <p><i data-lucide="mouse"></i> click</p>
+          <p>/</p>
+          <p><i data-lucide="space"></i> space</p>
+          <p>/</p>
+          <p><i data-lucide="corner-down-left"></i> enter</p>
+      </button>
+    </aside>
+
+    <aside id="wp-loading">
+      <h1>loading</h1>
+    </aside>
+
+    <script src="/engine/scripts/main.js" type="module"></script>
+    <script src="/engine/scripts/icons.js" type="module"></script>
+    <script>
+      if (window.location.protocol.startsWith('file')) {
+        document.body.innerHTML =
+          `you need to run a server for this to work - follow the instructions in readme.md`
+      }
+    </script>
+  </body>
+</html>

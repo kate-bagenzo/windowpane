@@ -1,0 +1,29 @@
+{
+  "name": "windowpane",
+  "description": "a multimedia engine",
+  "author": "kate bagenzo <katebagenzo@gmail.com>",
+  "version": "1.0.0",
+  "license": "CC BY-NC-SA",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "npm run dev",
+    "dev": "npm run generate && vite --port 1234",
+    "build": "npm run generate && vite build",
+    "preview": "vite preview --port 4321",
+    "getfiles": "node engine/functions/grab-files.js",
+    "getcss": "node engine/functions/config-css.js",
+    "generate": "npm run getfiles && npm run getcss"
+  },
+  "devDependencies": {
+    "vite": "^6.0.5",
+    "vite-plugin-watch-and-run": "^1.7.3"
+  },
+  "dependencies": {
+    "jsonc": "^2.0.0",
+    "lucide": "^0.483.0",
+    "marked": "^15.0.7",
+    "sass": "^1.83.1",
+    "vite-plugin-json5": "^1.1.6"
+  }
+}

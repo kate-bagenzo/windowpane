@@ -1,0 +1,100 @@
+// never seen SCSS before?
+// it's like css but can do more stuff - you can nest selectors which makes writing a lot easier
+@use "sass:map";
+@use '/engine/generated/config.scss' as *;
+
+@font-face {
+    font-family: 'Roboto';
+    src: url('/fonts/roboto.ttf');
+}
+
+// a simple style with a border + decent text settings
+.simple {
+    #screen {
+        border: 1px solid white;
+    }
+    .text {
+        padding: 1rem;
+        font-family: 'Roboto', 'sans-serif';
+        h1 {
+            font-size: 2rem;
+            text-align: center;
+            width: 100%;
+            background-color: white;
+            color: black;
+            padding: 0.5rem;
+        }
+        p {
+            margin-top: 1rem;
+            line-height: 1.5rem;
+            font-size: 1.2rem;
+        }
+        a {
+            color: white;
+            &:hover {
+                opacity: 50%;
+            }
+        }
+        table {
+            margin: 1rem;
+            border: 1px solid white;
+            caption {
+                caption-side: bottom;
+            }
+            th, td {
+                border: 1px solid white;
+                padding: 1rem;
+            }
+        }
+        code {
+            font-family: monospace;
+            background-color: white;
+            color: black;
+        }
+    }
+    video {
+        object-fit: fill;
+    }
+    .video-ended {
+        opacity: 50%;
+        transition: 2s;
+    }
+}
+
+.simple-bg {
+    // you can use @extend to inherit all the rules of another class, and then only change what you need to change
+    // this class is the same as .simple, but it has a background image
+    @extend .simple;
+    background-image: url('/images/checkerboard.gif');
+}
+
+// intended for text - has a sidebar with an image
+.simple-sidebar {
+    @extend .simple;
+    #viewer {
+        width: map.get($config, "viewerWidth");
+        display: flex;
+        justify-content: flex-end;
+        background-image: url('/images/checkerboard.gif');
+    }
+    #screen {
+        border-left: 1px solid white;
+        width: calc(map.get($config, "viewerWidth") * 0.8);
+        overflow: scroll;
+        scrollbar-color: white transparent;
+    }
+}
+
+// use flex + these settings to center things
+.simple-centered {
+    @extend.simple;
+    #screen {
+        border: none;
+        // these flex settings are the best way to center something in css
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1rem;
+    }
+}

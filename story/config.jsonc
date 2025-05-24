@@ -1,0 +1,95 @@
+{
+    /*
+                                    .o88o.  o8o             
+                                    888 `"  `"'             
+    .ooooo.   .ooooo.  ooo. .oo.   o888oo  oooo   .oooooooo 
+    d88' `"Y8 d88' `88b `888P"Y88b   888    `888  888' `88b  
+    888       888   888  888   888   888     888  888   888  
+    888   .o8 888   888  888   888   888     888  `88bod8P'  
+    `Y8bod8P' `Y8bod8P' o888o o888o o888o   o888o `8oooooo.  
+                                                d"     YD  
+                                                "Y88888P'  
+        not familiar with .json or .jsonc?
+        this file contains editable settings in a format designed to be readable by programs
+        make sure not to delete any {brackets} "double quotes" or commas, or this file will break
+
+                                   _                 _ _      
+      _                           | |      _        (_) |     
+  ___| |_  ___   ____ _   _     _ | | ____| |_  ____ _| | ___ 
+ /___)  _)/ _ \ / ___) | | |   / || |/ _  )  _)/ _  | | |/___)
+|___ | |_| |_| | |   | |_| |  ( (_| ( (/ /| |_( ( | | | |___ |
+(___/ \___)___/|_|    \__  |   \____|\____)\___)_||_|_|_(___/ 
+                     (____/                                   
+    */
+
+    // the title of the story
+    // appears on the infobar on the first page + the tab
+    "storyTitle": "untitled story",
+
+    // the author of the story
+    // appears on the infobar on the first page
+    "storyAuthor": "anonymous",
+
+    /*
+                _                              _                  
+      _        | |                    _   _   (_)                 
+  ___| |_ _   _| | ____     ___  ____| |_| |_  _ ____   ____  ___ 
+ /___)  _) | | | |/ _  )   /___)/ _  )  _)  _)| |  _ \ / _  |/___)
+|___ | |_| |_| | ( (/ /   |___ ( (/ /| |_| |__| | | | ( ( | |___ |
+(___/ \___)__  |_|\____)  (___/ \____)\___)___)_|_| |_|\_|| (___/ 
+         (____/                                       (_____|     
+    */
+
+    // the width of the viewer (in pixels)
+        // default: "1000"
+    "viewerWidth": "1000",
+
+    // the height of the viewer (in pixels)
+        // default: "800"
+    "viewerHeight": "800",
+
+    // the base background color
+    // use hex, rgba, or any other css color value
+        // default: "#000"
+    "bgColor": "#000",
+
+    // the base text color
+    // use hex, rgba, or any other css color value
+        // default: "#fff"
+    "fgColor": "#fff",
+
+    /*
+  ___                        _                   _ _           
+ / __)                  _   (_)                 | (_)_         
+| |__ _   _ ____   ____| |_  _  ___  ____   ____| |_| |_ _   _ 
+|  __) | | |  _ \ / ___)  _)| |/ _ \|  _ \ / _  | | |  _) | | |
+| |  | |_| | | | ( (___| |__| | |_| | | | ( ( | | | | |_| |_| |
+|_|   \____|_| |_|\____)\___)_|\___/|_| |_|\_||_|_|_|\___)__  |
+                                                        (____/ 
+    */
+    
+    // button delay before the user can continue advancing pages (in milliseconds)
+        // default: "150"
+    "inputDelay": "150",
+
+    // default link text for text pages
+        // default: "==>"
+    "linkText": "==>",
+    
+    // reader allowed to skip or bookmark pages & go backwards
+    // only applies to the final build - dev server rollback is always enabled; will print a notice to console instead
+        // default: true
+    "rollBack": true,
+
+
+    // built in "click to run" button, for uploading to sites that don't provide one
+    // see the FAQ for more info
+        // default: false
+    "clickToContinue": false,
+
+
+    // if videos loop
+    // note: you can still set individual settings for pages with the LOOP command
+        // default: false
+    "loopVideos": false
+}

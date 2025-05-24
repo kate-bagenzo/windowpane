@@ -65,7 +65,7 @@
     // you can use @extend to inherit all the rules of another class, and then only change what you need to change
     // this class is the same as .simple, but it has a background image
     @extend .simple;
-    background-image: url('./images/checkerboard.gif');
+    background-image: url('/images/checkerboard.gif');
 }
 
 // intended for text - has a sidebar with an image
@@ -75,7 +75,7 @@
         width: map.get($config, "viewerWidth");
         display: flex;
         justify-content: flex-end;
-        background-image: url('./images/checkerboard.gif');
+        background-image: url('/images/checkerboard.gif');
     }
     #screen {
         border-left: 1px solid white;

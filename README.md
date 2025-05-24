@@ -133,9 +133,10 @@ this way, you can go page by page and see what needs editing
 
 ## ❓ FAQ
 
-### 🖼️ IMAGES ARE MISSING IN THE FINAL OUTPUT
-use relative paths  
-instead of `/images/gato.png`, use `./images.gato.png`
+### 🖼️ IMAGES ARE MISSING IN TEXT PAGES IN THE FINAL BUILD
+use relative paths in .md files  
+instead of `/images/gato.png`, use `./images/gato.png`  
+that little dot makes all the difference
 
 ### 🔮 I'M LOSING TRACK OF FILENAME/PAGE NUMBERS
 hit F12 to bring up the developer tools  

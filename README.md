@@ -1,5 +1,5 @@
 # 🪟 windowpane
-🖼️ 🎞️ 📝 🎲 a multimedia engine
+🖼️ 🎞️ 📝 🎲 a multimedia engine  
 🎀 by kate bagenzo
 
 ## 🙋‍♀️ WHAT IS THIS?
@@ -83,13 +83,15 @@ you can use:
 write commands in `story/script.txt`  
 example command: `3 SFX gato.ogg`  
 each command is a single line with three components, separated by a space  
-    - number  
-        which file the command will run on (this command runs on the page named `3`, e.g. `3.png`)  
-        ⚠️ IMPORTANT ⚠️: specify the FILENAME, not the page number! see the faq for more details  
-    - type  
-        what the command does (SFX plays a sound once)  
-    - value  
-        the filename or value that the command acts on (in this case, `gato.ogg`)  
+- number  
+    - which file the command will run on (this command runs on the page named `3`, e.g. `3.png`)  
+    - ⚠️ IMPORTANT ⚠️: specify the FILENAME, not the page number! see the faq for more details  
+
+- type  
+    what the command does (SFX plays a sound once)  
+
+- value  
+    the filename or value that the command acts on (in this case, `gato.ogg`)  
 
 commands can be written in any order  
 in case of contradictory commands (e.g. `4 SETSTYLE example1 4 SETSTYLE example2`) the latest one applies  
@@ -98,38 +100,43 @@ this way, you can go page by page and see what needs editing
 
 ### 💬 COMMAND TYPES
 - 🎨 SETSTYLE  
-    set a css class on the game window  
-    example: `2 SETSTYLE example` will apply a class of `.example` to the viewer on the page `2.md`  
-    this removes all other css classes  
-    style persists until another SETSTYLE command is reached, or SETSTYLE CLEAR is used  
-        custom styles are kept in `engine/styles/styles.scss`  
-        if you don't want to write css (or don't know how), there are some basic styles included  
-        classes are applied to the `#app` element  
+    - set a css class on the game window  
+    - example: `2 SETSTYLE example` will apply a class of `.example` to the viewer on the page `2.md`  
+    - this removes all other css classes  
+    - style persists until another SETSTYLE command is reached, or SETSTYLE CLEAR is used  
+        - custom styles are kept in `engine/styles/styles.scss`  
+        - if you don't want to write css (or don't know how), there are some basic styles included  
+        - classes are applied to the `#app` element  
 
 - 📢 SFX  
-    play a noise  
-    example: `3 SFX gato.ogg` will play the sound `gato.ogg` every visit to `3.png`  
-    place sfx in `story/assets/sound/`  
+    - play a noise  
+    - example: `3 SFX gato.ogg` will play the sound `gato.ogg` every visit to `3.png`  
+    - place sfx in `story/assets/sound/`  
 
 - 🎹 MUSIC  
-    play a noise and loop it  
-    example: `4 SFX bombas.ogg` will start the music `bombas.ogg` every visit to `4.png`  
-    music continues until another MUSIC command is reached  
-    use MUSIC CLEAR to clear music  
-    place music in `story/assets/sound/`  
+    - play a noise and loop it  
+    - example: `4 SFX bombas.ogg` will start the music `bombas.ogg` every visit to `4.png`  
+    - music continues until another MUSIC command is reached  
+    - use MUSIC CLEAR to clear music  
+    - place music in `story/assets/sound/`  
 
 - 🔁 LOOP  
-    video pages only: make video loop (or not)  
-    example: `5 LOOP true` or `5 LOOP false`  
-    the default behavior (false) can be adjusted in config.jsonc  
+    - video pages only: make video loop (or not)  
+    - example: `5 LOOP true` or `5 LOOP false`  
+    - the default behavior (false) can be adjusted in config.jsonc  
 
 - ⚙️ CUSTOM  
-    a command that has no effect by default  
-    example: `6 CUSTOM example`  
-    it's easily editable so you can quickly add an extra bit of functionality, if needed  
-    just uncomment and edit the commented block in `engine/scripts/main.js`  
+    - a command that has no effect by default  
+    - example: `6 CUSTOM example`  
+    - it's easily editable so you can quickly add an extra bit of functionality, if needed  
+    - just uncomment and edit the commented block in `engine/scripts/main.js`  
 
 ## ❓ FAQ
+
+### 🖼️ IMAGES ARE MISSING IN THE FINAL OUTPUT
+use relative paths  
+instead of `/images/gato.png`, use `./images.gato.png`
+
 ### 🔮 I'M LOSING TRACK OF FILENAME/PAGE NUMBERS
 hit F12 to bring up the developer tools  
 windowpane prints a list of pages, along with story info  

@@ -328,7 +328,7 @@ $ui_box_height: max(600px, (calc(map.get($config, "viewerHeight") / 1.5)));
     }
     #screen {
         object-fit: contain;
-        aspect-ratio: map.get($config, "viewerWidth") / map.get($config, "viewerHeight");
+        aspect-ratio: calc(map.get($config, "viewerWidth") / map.get($config, "viewerHeight"));
     }
     #wp-replay-overlay {
         display: none;

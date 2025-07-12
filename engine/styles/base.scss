@@ -223,8 +223,8 @@ $ui_box_height: max(600px, (calc(map.get($config, "viewerHeight") / 1.5)));
         font-size: 5rem;
         width: 80%;
         text-align: center;
-        background-color: map.get($config, "bgColor");
-        color: map.get($config, "fgColor");
+        background-color: $wp-bg-color;
+        color: $wp-fg-color;
     }
     span {
         display: flex;

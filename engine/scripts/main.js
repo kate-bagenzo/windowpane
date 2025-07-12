@@ -164,7 +164,7 @@ function updateScreen() {
             })
             break;
         default:
-            viewer.innerHTML = `<img width=${config.viewerWidth} height=${config.viewerHeight} id="screen" class="image" src="${storyFolder}${pages[currentPage]}">`;
+            viewer.innerHTML = `<img draggable="false" width=${config.viewerWidth} height=${config.viewerHeight} id="screen" class="image" src="${storyFolder}${pages[currentPage]}">`;
             applyPageCommands(currentPageCommands);
             addContinue();
     }

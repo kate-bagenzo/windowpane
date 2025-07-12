@@ -277,5 +277,10 @@ some miscellaneous folders and files:
 
 
 ## 🤖 CHANGELOG
+### 1.0.1
+- user color settings no longer affect the skip page
+- image pages are no longer draggable
+- nesting folders in the assets folders no longer causes console errors
+
 ### 1.0.0
 - initial release

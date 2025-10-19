@@ -277,6 +277,8 @@ some miscellaneous folders and files:
 
 
 ## 🤖 CHANGELOG
+### 1.1
+- changing link text in config works properly
 ### 1.0.1
 - user color settings no longer affect the skip page
 - image pages are no longer draggable

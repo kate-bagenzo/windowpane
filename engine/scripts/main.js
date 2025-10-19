@@ -84,7 +84,7 @@ function updateScreen() {
                 if (text.includes('next-page') || currentPage + 1 == pages.length) {
                     viewer.innerHTML = `<section id="screen" class="text">${marked.parse(text)}</section>`;
                 } else {
-                    viewer.innerHTML = `<section id="screen" class="text">${marked.parse(text)}<a href="next-page">==></a></section>`;
+                    viewer.innerHTML = `<section id="screen" class="text">${marked.parse(text)}<a href="next-page">${config.linkText}</a></section>`;
                 }
                 applyPageCommands(currentPageCommands);
                 const nextPage = document.querySelectorAll("a[href='next-page']");

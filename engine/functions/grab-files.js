@@ -1,7 +1,12 @@
 import fs from 'fs';
 import path from 'path';
 
-!(fs.readdirSync("engine/generated")) && fs.mkdirSync("engine/generated");
+try {
+    fs.readdirSync("engine/generated/");
+} catch {
+    console.log("Creating the engine/generated folder...");
+    fs.mkdirSync("engine/generated/");
+}
 
 const errorCheck = [];
 fs.readdir('story/assets/pages', {withFileTypes: true}, (err, files) => {

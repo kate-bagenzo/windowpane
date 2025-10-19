@@ -279,6 +279,7 @@ some miscellaneous folders and files:
 ## 🤖 CHANGELOG
 ### 1.1
 - changing link text in config works properly
+- generated folder is properly written if deleted
 ### 1.0.1
 - user color settings no longer affect the skip page
 - image pages are no longer draggable

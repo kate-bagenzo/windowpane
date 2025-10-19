@@ -463,13 +463,14 @@ if (pages[0] == 'DUPES') {
     .then(response => response.text())
     .then(instructs => {
         const tempInstructions = new Map();
-        const splitted = instructs.split('\n');
+        const clearReturn = instructs.replace(/[\r]/g, "");
+        const splitted = clearReturn.split('\n');
         for (let i = 0; i < splitted.length; i++) {
             if (splitted[i]) {
                 const pieces = splitted[i].split(' ');
                 const newPage = parseFloat(pieces[0]);
                 const newCmd = pieces[1];
-                const newValue = pieces[2].replace(/[\r]/g, "");
+                const newValue = pieces[2];
                 if (tempInstructions.has(newPage)) {
                     tempInstructions.get(newPage).push({page: newPage, command: newCmd, value: newValue});
                 } else {

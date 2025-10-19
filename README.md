@@ -108,26 +108,38 @@ this way, you can go page by page and see what needs editing
         - if you don't want to write css (or don't know how), there are some basic styles included  
         - classes are applied to the `#app` element  
 
+- 🌄 SETBG
+    - set a css class on the #screen element
+    - example: `3 SETSTYLE example` will apply a class of `.example` to the screen element on the page `3.md`
+    - this takes precedence over other style settings, and like SETSTYLE will persist until CLEAR is used
+        - makes it easier if you want to write text on top of changing images
+        - note: this won't overwrite css applied by SETSTYLE - either be careful or use !important to override your styles
+
+- 🌅 SETFG
+    - set a css class on the #viewer element
+    - example: `4 SETSTYLE example` will apply a class of `.example` to the viewer element on the page `3.md`
+    - exactly like SETBG, but applies to the element in front of it
+
 - 📢 SFX  
     - play a noise  
-    - example: `3 SFX gato.ogg` will play the sound `gato.ogg` every visit to `3.png`  
+    - example: `5 SFX gato.ogg` will play the sound `gato.ogg` every visit to `5.png`  
     - place sfx in `story/assets/sound/`  
 
 - 🎹 MUSIC  
     - play a noise and loop it  
-    - example: `4 SFX bombas.ogg` will start the music `bombas.ogg` every visit to `4.png`  
+    - example: `6 SFX bombas.ogg` will start the music `bombas.ogg` every visit to `6.png`  
     - music continues until another MUSIC command is reached  
     - use MUSIC CLEAR to clear music  
     - place music in `story/assets/sound/`  
 
 - 🔁 LOOP  
     - video pages only: make video loop (or not)  
-    - example: `5 LOOP true` or `5 LOOP false`  
+    - example: `7 LOOP true` or `7 LOOP false`  
     - the default behavior (false) can be adjusted in config.jsonc  
 
 - ⚙️ CUSTOM  
     - a command that has no effect by default  
-    - example: `6 CUSTOM example`  
+    - example: `8 CUSTOM example` will do nothing on page `8.jpeg`
     - it's easily editable so you can quickly add an extra bit of functionality, if needed  
     - just uncomment and edit the commented block in `engine/scripts/main.js`  
 
@@ -278,10 +290,11 @@ some miscellaneous folders and files:
 
 ## 🤖 CHANGELOG
 ### 1.1
-- changing link text in config works properly
-- generated folder is properly written if deleted
+- NEW: two commands for easily changing the css properties of the main elements, SETBG and SETFG
+- changing link text in config now works properly
+- the generated folder is now properly created if its been deleted
 - script.txt is now properly cleared of CRLF returns
-- bookmarks are now properly unique
+- bookmarks are now actually unique
 ### 1.0.1
 - user color settings no longer affect the skip page
 - image pages are no longer draggable

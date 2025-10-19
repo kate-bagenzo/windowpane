@@ -181,6 +181,8 @@ function updateScreen() {
 // page manipulation
 function applyPageCommands(currentPageCommands) {
     app.className = currentPageCommands.style;
+    currentPageCommands.bgStyle && (document.getElementById('screen').className = currentPageCommands.bgStyle);
+    currentPageCommands.fgStyle && (document.getElementById('viewer').className = currentPageCommands.fgStyle);
     currentPageCommands.sfx && playSFX(currentPageCommands.sfx);
     currentPageCommands.music ? playMusic(currentPageCommands.music) : stopMusic();
     document.getElementById('screen').loop = currentPageCommands.loop;
@@ -484,6 +486,8 @@ if (pages[0] == 'DUPES') {
         debug && console.groupEnd();
         // parse script & pages
         let style = "";
+        let bgStyle = "";
+        let fgStyle = "";
         let sfx = "";
         let loop = config.loopVideos;
         let music = "";
@@ -523,6 +527,12 @@ if (pages[0] == 'DUPES') {
                             case 'SETSTYLE':
                                 style = j.value;
                                 break;
+                            case 'SETBG':
+                                bgStyle = j.value;
+                                break;
+                            case 'SETFG':
+                                fgStyle = j.value;
+                                break;
                             case 'SFX':
                                 sfx = j.value;
                                 break;
@@ -542,6 +552,8 @@ if (pages[0] == 'DUPES') {
                 if (filename) {tempPage.filename = filename};
                 if (pageType) {tempPage.pageType = pageType};
                 if (style) {tempPage.style = style};
+                if (bgStyle) {tempPage.bgStyle = bgStyle};
+                if (fgStyle) {tempPage.fgStyle = fgStyle};
                 if (music) {tempPage.music = music};
                 if (sfx) {tempPage.sfx = sfx};
                 if (loop) {tempPage.loop = loop};

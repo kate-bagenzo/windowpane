@@ -39,10 +39,11 @@ const soundFolder = './sound/';
 
 
 // load bookmark if any
+const bookMarkName = `wp-${config.storyTitle}-by-${config.storyAuthor}`;
 let bookmarkedPage;
 let loadedFromBookmark = false;
-if (localStorage.getItem("bookmarkedPage") != null) {
-    bookmarkedPage = Number(localStorage.getItem("bookmarkedPage"));
+if (localStorage.getItem(bookMarkName) != null) {
+    bookmarkedPage = Number(localStorage.getItem(bookMarkName));
 } else {
     bookmarkedPage = -1;
 }
@@ -369,13 +370,13 @@ function addShortcuts(){
         } else if (e.key === 'b' | e.key === 'B') {
             if (currentPage != -1) {
                 if (bookmarkedPage != currentPage) {
-                    localStorage.setItem('bookmarkedPage', currentPage);
+                    localStorage.setItem(bookMarkName, currentPage);
                     bookmarkedPage = currentPage;
                     document.querySelector('#wp-bookmark p').innerHTML = `page ${currentPage + 1} bookmarked`;
                     document.getElementById('wp-bookmark').classList.remove('isHidden');
                     hideBookmarks();
                 } else {
-                    localStorage.setItem('bookmarkedPage', -1);
+                    localStorage.setItem(bookMarkName, -1);
                     bookmarkedPage = -1;
                     document.querySelector('#wp-bookmark p').innerHTML = 'bookmark removed';
                     document.getElementById('wp-bookmark').classList.remove('isHidden');

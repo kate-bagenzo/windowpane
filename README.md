@@ -281,6 +281,7 @@ some miscellaneous folders and files:
 - changing link text in config works properly
 - generated folder is properly written if deleted
 - script.txt is now properly cleared of CRLF returns
+- bookmarks are now properly unique
 ### 1.0.1
 - user color settings no longer affect the skip page
 - image pages are no longer draggable

@@ -15,7 +15,7 @@ fs.readdir('story/assets/pages', {withFileTypes: true}, (err, files) => {
     }
     const fileList = [];
     files.forEach((file) => {
-        if (file.isFile()) {
+        if (file.isFile() && file.name != ".DS_Store") {
             const fileNameNoType = file.name.substring(0, file.name.lastIndexOf('.'));
             errorCheck.push(fileNameNoType);
             if (!isNaN(fileNameNoType)) {
@@ -47,7 +47,7 @@ fs.readdir('story/assets/images', {withFileTypes: true}, (err, files) => {
     }
     const extraImg = [];
     files.forEach((file) => {
-        if (file.isFile()) {
+        if (file.isFile() && file.name != ".DS_Store") {
             const newPath = path.normalize(`${file.parentPath.replace('story/assets/', '')}/${file.name}`.replace(/\\/g, "/"));
             extraImg.push(newPath);
         };
@@ -62,7 +62,7 @@ fs.readdir('story/assets/sound', {withFileTypes: true}, (err, files) => {
     }
     const extraImg = [];
     files.forEach((file) => {
-        if (file.isFile()) {
+        if (file.isFile() && file.name != ".DS_Store") {
             const newPath = path.normalize(`${file.parentPath.replace('story/assets/', '')}/${file.name}`.replace(/\\/g, "/"));
             extraImg.push(newPath);
         };
@@ -77,7 +77,7 @@ fs.readdir('story/assets/fonts', {withFileTypes: true}, (err, files) => {
     }
     const extraImg = [];
     files.forEach((file) => {
-        if (file.isFile()) {
+        if (file.isFile() && file.name != ".DS_Store") {
             const newPath = path.normalize(`${file.parentPath.replace('story/assets/', '')}/${file.name}`.replace(/\\/g, "/"));
             extraImg.push(newPath);
         };

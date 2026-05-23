@@ -289,6 +289,9 @@ some miscellaneous folders and files:
 
 
 ## 🤖 CHANGELOG
+### 1.2
+- fixed .DS_Store interferring on macOS
+
 ### 1.1
 - NEW: two commands for easily changing the css properties of the main elements, SETBG and SETFG
 - changing link text in config now works properly
